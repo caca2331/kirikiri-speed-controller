@@ -1,0 +1,75 @@
+#include "XAudio2Hook.h"
+
+#include <algorithm>
+#include <iostream>
+#include <map>
+
+namespace krkrspeed {
+
+XAudio2Hook &XAudio2Hook::instance() {
+    static XAudio2Hook hook;
+    return hook;
+}
+
+void XAudio2Hook::initialize() {
+    detectVersion();
+    hookEntryPoints();
+}
+
+void XAudio2Hook::detectVersion() {
+    HMODULE xa27 = GetModuleHandleA("XAudio2_7.dll");
+    HMODULE xa28 = GetModuleHandleA("XAudio2_8.dll");
+    HMODULE xa29 = GetModuleHandleA("XAudio2_9.dll");
+    if (xa29) m_version = "2.9";
+    else if (xa28) m_version = "2.8";
+    else if (xa27) m_version = "2.7";
+    else m_version = "unknown";
+}
+
+void XAudio2Hook::hookEntryPoints() {
+    // Placeholder for MinHook wiring. The scaffolding allows future work to attach to
+    // XAudio2Create/CoCreateInstance dynamically while keeping thread-safe state.
+}
+
+void XAudio2Hook::setUserSpeed(float speed) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_userSpeed = std::clamp(speed, 0.75f, 2.0f);
+    for (auto &kv : m_contexts) {
+        kv.second.userSpeed = m_userSpeed;
+        kv.second.effectiveSpeed = kv.second.userSpeed * kv.second.engineRatio;
+    }
+}
+
+void XAudio2Hook::onCreateSourceVoice(std::uintptr_t voiceKey, std::uint32_t sampleRate, std::uint32_t channels) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    VoiceContext ctx;
+    ctx.effectiveSpeed = ctx.userSpeed * ctx.engineRatio;
+    m_contexts.emplace(voiceKey, std::move(ctx));
+    (void)sampleRate;
+    (void)channels;
+}
+
+std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, const std::uint8_t *data, std::size_t size) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_contexts.find(voiceKey);
+    if (it == m_contexts.end()) {
+        return std::vector<std::uint8_t>(data, data + size);
+    }
+
+    const float ratio = it->second.effectiveSpeed;
+    if (!it->second.isVoice) {
+        return std::vector<std::uint8_t>(data, data + size);
+    }
+
+    // Lazy-initialize DSP pipeline per voice.
+    static DspConfig defaultConfig{};
+    static std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> pipelines;
+    auto pipeline = pipelines.find(voiceKey);
+    if (pipeline == pipelines.end()) {
+        auto dsp = std::make_unique<DspPipeline>(44100, 1, defaultConfig);
+        pipeline = pipelines.emplace(voiceKey, std::move(dsp)).first;
+    }
+    return pipeline->second->process(data, size, ratio);
+}
+
+} // namespace krkrspeed
