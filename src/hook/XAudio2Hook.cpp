@@ -1,12 +1,18 @@
 #include "XAudio2Hook.h"
-
-#include <algorithm>
-#include <iostream>
-#include <map>
-#include <cstdint>
+#include "HookUtils.h"
 #include "../common/Logging.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <map>
+#include <deque>
+#include <vector>
+
 namespace krkrspeed {
+
+namespace {
+XAudio2Hook *g_self = nullptr;
+}
 
 XAudio2Hook &XAudio2Hook::instance() {
     static XAudio2Hook hook;
@@ -14,6 +20,7 @@ XAudio2Hook &XAudio2Hook::instance() {
 }
 
 void XAudio2Hook::initialize() {
+    g_self = this;
     detectVersion();
     hookEntryPoints();
     KRKR_LOG_INFO("XAudio2 hook initialized for version " + m_version);
@@ -31,9 +38,26 @@ void XAudio2Hook::detectVersion() {
 }
 
 void XAudio2Hook::hookEntryPoints() {
-    // Placeholder for MinHook wiring. The scaffolding allows future work to attach to
-    // XAudio2Create/CoCreateInstance dynamically while keeping thread-safe state.
-    KRKR_LOG_INFO("XAudio2 hookEntryPoints stub invoked (MinHook wiring pending)");
+    bool patched = false;
+    if (PatchImport("XAudio2_9.dll", "XAudio2Create", reinterpret_cast<void *>(&XAudio2Hook::XAudio2CreateHook),
+                    reinterpret_cast<void **>(&m_origCreate))) {
+        m_version = "2.9";
+        patched = true;
+    } else if (PatchImport("XAudio2_8.dll", "XAudio2Create", reinterpret_cast<void *>(&XAudio2Hook::XAudio2CreateHook),
+                           reinterpret_cast<void **>(&m_origCreate))) {
+        m_version = "2.8";
+        patched = true;
+    } else if (PatchImport("XAudio2_7.dll", "XAudio2Create", reinterpret_cast<void *>(&XAudio2Hook::XAudio2CreateHook),
+                           reinterpret_cast<void **>(&m_origCreate))) {
+        m_version = "2.7";
+        patched = true;
+    }
+
+    if (patched) {
+        KRKR_LOG_INFO("Patched XAudio2Create import for version " + m_version);
+    } else {
+        KRKR_LOG_WARN("Failed to patch XAudio2Create import; will fall back to GetProcAddress interception");
+    }
 }
 
 void XAudio2Hook::setUserSpeed(float speed) {
@@ -46,6 +70,14 @@ void XAudio2Hook::setUserSpeed(float speed) {
     }
 }
 
+void XAudio2Hook::setOriginalCreate(void *fn) {
+    if (!fn || m_origCreate) {
+        return;
+    }
+    m_origCreate = reinterpret_cast<PFN_XAudio2Create>(fn);
+    KRKR_LOG_DEBUG("Captured XAudio2Create via GetProcAddress; enabling XAudio2 interception");
+}
+
 void XAudio2Hook::configureLengthGate(bool enabled, float seconds) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_lengthGateEnabled = enabled;
@@ -54,19 +86,139 @@ void XAudio2Hook::configureLengthGate(bool enabled, float seconds) {
                   std::to_string(m_lengthGateSeconds) + "s");
 }
 
+HRESULT WINAPI XAudio2Hook::XAudio2CreateHook(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR proc) {
+    if (!g_self || !g_self->m_origCreate) {
+        return XAUDIO2_E_INVALID_CALL;
+    }
+    const HRESULT hr = g_self->m_origCreate(ppXAudio2, Flags, proc);
+    if (FAILED(hr) || !ppXAudio2 || !*ppXAudio2) {
+        return hr;
+    }
+
+    void **vtbl = *reinterpret_cast<void ***>(*ppXAudio2);
+    if (!g_self->m_origCreateSourceVoice) {
+        PatchVtableEntry(vtbl, 7, &XAudio2Hook::CreateSourceVoiceHook, g_self->m_origCreateSourceVoice);
+        KRKR_LOG_INFO("IXAudio2 vtable patched (CreateSourceVoice)");
+    }
+    return hr;
+}
+
+HRESULT __stdcall XAudio2Hook::CreateSourceVoiceHook(IXAudio2 *self, IXAudio2SourceVoice **ppSourceVoice,
+                                                     const WAVEFORMATEX *fmt, UINT32 Flags, float MaxFreqRatio,
+                                                     IXAudio2VoiceCallback *cb, const XAUDIO2_EFFECT_CHAIN *chain,
+                                                     const XAUDIO2_FILTER_PARAMETERS *filter) {
+    auto &hook = XAudio2Hook::instance();
+    if (!hook.m_origCreateSourceVoice) {
+        return XAUDIO2_E_INVALID_CALL;
+    }
+    const HRESULT hr =
+        hook.m_origCreateSourceVoice(self, ppSourceVoice, fmt, Flags, MaxFreqRatio, cb, chain, filter);
+    if (FAILED(hr) || !ppSourceVoice || !*ppSourceVoice || !fmt) {
+        return hr;
+    }
+
+    std::uintptr_t key = reinterpret_cast<std::uintptr_t>(*ppSourceVoice);
+    hook.onCreateSourceVoice(key, fmt->nSamplesPerSec, fmt->nChannels);
+
+    void **vtbl = *reinterpret_cast<void ***>(*ppSourceVoice);
+    if (!hook.m_origSubmit) {
+        PatchVtableEntry(vtbl, 3, &XAudio2Hook::SubmitSourceBufferHook, hook.m_origSubmit);
+    }
+    if (!hook.m_origSetFreq) {
+        PatchVtableEntry(vtbl, 19, &XAudio2Hook::SetFrequencyRatioHook, hook.m_origSetFreq);
+    }
+    if (!hook.m_origDestroyVoice) {
+        PatchVtableEntry(vtbl, 2, &XAudio2Hook::DestroyVoiceHook, hook.m_origDestroyVoice);
+    }
+
+    KRKR_LOG_DEBUG("Patched IXAudio2SourceVoice vtable entries");
+    return hr;
+}
+
+void __stdcall XAudio2Hook::DestroyVoiceHook(IXAudio2Voice *voice) {
+    auto &hook = XAudio2Hook::instance();
+    {
+        std::lock_guard<std::mutex> lock(hook.m_mutex);
+        hook.m_contexts.erase(reinterpret_cast<std::uintptr_t>(voice));
+    }
+    if (hook.m_origDestroyVoice) {
+        hook.m_origDestroyVoice(voice);
+    }
+}
+
+HRESULT __stdcall XAudio2Hook::SetFrequencyRatioHook(IXAudio2SourceVoice *voice, float ratio, UINT32 operationSet) {
+    auto &hook = XAudio2Hook::instance();
+    if (hook.m_origSetFreq) {
+        std::lock_guard<std::mutex> lock(hook.m_mutex);
+        auto it = hook.m_contexts.find(reinterpret_cast<std::uintptr_t>(voice));
+        if (it != hook.m_contexts.end()) {
+            it->second.engineRatio = ratio;
+            it->second.effectiveSpeed = it->second.userSpeed * it->second.engineRatio;
+        }
+        return hook.m_origSetFreq(voice, ratio, operationSet);
+    }
+    return XAUDIO2_E_INVALID_CALL;
+}
+
+HRESULT __stdcall XAudio2Hook::SubmitSourceBufferHook(IXAudio2SourceVoice *voice, const XAUDIO2_BUFFER *pBuffer,
+                                                      const XAUDIO2_BUFFER_WMA *pBufferWMA) {
+    auto &hook = XAudio2Hook::instance();
+    if (!hook.m_origSubmit || !pBuffer || !pBuffer->pAudioData || pBuffer->AudioBytes == 0) {
+        return XAUDIO2_E_INVALID_CALL;
+    }
+
+    std::vector<std::uint8_t> processed;
+    {
+        std::lock_guard<std::mutex> lock(hook.m_mutex);
+        auto it = hook.m_contexts.find(reinterpret_cast<std::uintptr_t>(voice));
+        if (it == hook.m_contexts.end()) {
+            return hook.m_origSubmit(voice, pBuffer, pBufferWMA);
+        }
+
+        // Assume 16-bit PCM.
+        processed = hook.onSubmitBuffer(reinterpret_cast<std::uintptr_t>(voice),
+                                        reinterpret_cast<const std::uint8_t *>(pBuffer->pAudioData),
+                                        pBuffer->AudioBytes);
+        if (processed.empty()) {
+            return hook.m_origSubmit(voice, pBuffer, pBufferWMA);
+        }
+    }
+
+    // Prepare a copy of the buffer with replaced data.
+    XAUDIO2_BUFFER copy = *pBuffer;
+    copy.pAudioData = processed.data();
+    copy.AudioBytes = static_cast<UINT32>(processed.size());
+
+    // Keep payload alive by storing in the context.
+    {
+        std::lock_guard<std::mutex> lock(hook.m_mutex);
+        auto &ctx = hook.m_contexts[reinterpret_cast<std::uintptr_t>(voice)];
+        BufferMeta meta;
+        meta.payload = std::move(processed);
+        ctx.pendingBuffers.push_back(std::move(meta));
+        // Prevent unbounded growth.
+        while (ctx.pendingBuffers.size() > 16) {
+            ctx.pendingBuffers.pop_front();
+        }
+    }
+
+    return hook.m_origSubmit(voice, &copy, pBufferWMA);
+}
+
 void XAudio2Hook::onCreateSourceVoice(std::uintptr_t voiceKey, std::uint32_t sampleRate, std::uint32_t channels) {
     std::lock_guard<std::mutex> lock(m_mutex);
     VoiceContext ctx;
     ctx.sampleRate = sampleRate;
     ctx.channels = channels;
+    ctx.userSpeed = m_userSpeed;
     ctx.effectiveSpeed = ctx.userSpeed * ctx.engineRatio;
     m_contexts.emplace(voiceKey, std::move(ctx));
     KRKR_LOG_DEBUG("Created voice context key=" + std::to_string(voiceKey) + " sr=" + std::to_string(sampleRate) +
                    " ch=" + std::to_string(channels));
 }
 
-std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, const std::uint8_t *data, std::size_t size) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, const std::uint8_t *data,
+                                                      std::size_t size) {
     auto it = m_contexts.find(voiceKey);
     if (it == m_contexts.end()) {
         return std::vector<std::uint8_t>(data, data + size);
@@ -85,7 +237,6 @@ std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, c
         }
     }
 
-    // Lazy-initialize DSP pipeline per voice.
     static DspConfig defaultConfig{};
     static std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> pipelines;
     auto pipeline = pipelines.find(voiceKey);

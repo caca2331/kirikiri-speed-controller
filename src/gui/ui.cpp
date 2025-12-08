@@ -9,6 +9,7 @@
 
 #include <Windows.h>
 #include <CommCtrl.h>
+#include <Psapi.h>
 #include <TlHelp32.h>
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <system_error>
 #include <string>
 #include <vector>
 
@@ -77,6 +79,48 @@ std::wstring describeArch(ProcessArch arch) {
     default:
         return L"unknown";
     }
+}
+
+bool ensureDebugPrivilege() {
+    static bool attempted = false;
+    static bool enabled = false;
+    if (attempted) {
+        return enabled;
+    }
+    attempted = true;
+
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        KRKR_LOG_WARN("OpenProcessToken failed while enabling SeDebugPrivilege: " + std::to_string(GetLastError()));
+        return false;
+    }
+
+    LUID luid{};
+    if (!LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &luid)) {
+        KRKR_LOG_WARN("LookupPrivilegeValueW(SE_DEBUG_NAME) failed: " + std::to_string(GetLastError()));
+        CloseHandle(token);
+        return false;
+    }
+
+    TOKEN_PRIVILEGES tp{};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), nullptr, nullptr)) {
+        KRKR_LOG_WARN("AdjustTokenPrivileges failed: " + std::to_string(GetLastError()));
+        CloseHandle(token);
+        return false;
+    }
+    const DWORD lastErr = GetLastError();
+    CloseHandle(token);
+    if (lastErr == ERROR_NOT_ALL_ASSIGNED) {
+        KRKR_LOG_WARN("SeDebugPrivilege not assigned; elevated/protected targets may still reject injection");
+        return false;
+    }
+
+    enabled = true;
+    KRKR_LOG_INFO("SeDebugPrivilege enabled for injector process");
+    return true;
 }
 
 constexpr ProcessArch getSelfArch() {
@@ -278,72 +322,193 @@ void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes)
     }
 }
 
+std::filesystem::path getProcessDirectory(DWORD pid);
+bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &error);
+
 bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &error) {
+    ensureDebugPrivilege();
+
     // Preflight: ensure we can load the DLL locally (catches missing dependencies).
-    HMODULE localHandle = LoadLibraryW(dllPath.c_str());
-    if (!localHandle) {
-        error = L"Preflight LoadLibraryW failed locally (error " + std::to_wstring(GetLastError()) +
-                L"); check dependencies beside the DLL.";
-        return false;
-    }
-    FreeLibrary(localHandle);
+    auto preflightLoad = [](const std::wstring &path, std::wstring &err) -> bool {
+        SetEnvironmentVariableW(L"KRKR_SKIP_HOOK_INIT", L"1"); // avoid patching the controller during the preflight load
+        HMODULE localHandle = LoadLibraryW(path.c_str());
+        SetEnvironmentVariableW(L"KRKR_SKIP_HOOK_INIT", nullptr);
+        if (!localHandle) {
+            err = L"Preflight LoadLibraryW failed locally (error " + std::to_wstring(GetLastError()) +
+                  L"); check dependencies beside the DLL.";
+            return false;
+        }
+        FreeLibrary(localHandle);
+        return true;
+    };
 
-    HANDLE process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
-                                     PROCESS_VM_WRITE | PROCESS_VM_READ,
-                                 FALSE, pid);
-    if (!process) {
-        error = L"OpenProcess failed (error " + std::to_wstring(GetLastError()) + L")";
-        return false;
-    }
-
-    const SIZE_T bytes = (dllPath.size() + 1) * sizeof(wchar_t);
-    LPVOID remoteMemory = VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMemory) {
-        error = L"VirtualAllocEx failed (error " + std::to_wstring(GetLastError()) + L")";
-        CloseHandle(process);
+    std::wstring preflightErr;
+    if (!preflightLoad(dllPath, preflightErr)) {
+        error = preflightErr;
         return false;
     }
 
-    if (!WriteProcessMemory(process, remoteMemory, dllPath.c_str(), bytes, nullptr)) {
-        error = L"WriteProcessMemory failed (error " + std::to_wstring(GetLastError()) + L")";
+    std::vector<std::wstring> attemptNotes;
+
+    auto tryLoad = [&](const std::wstring &path, size_t attemptIndex, std::wstring &err) -> bool {
+        HANDLE process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
+                                         PROCESS_VM_WRITE | PROCESS_VM_READ,
+                                     FALSE, pid);
+        if (!process) {
+            const DWORD e = GetLastError();
+            err = L"OpenProcess failed (error " + std::to_wstring(e) + L")";
+            if (e == ERROR_ACCESS_DENIED) {
+                err += L"; run the controller as Administrator or ensure the target is not elevated/protected.";
+            }
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+
+        const SIZE_T bytes = (path.size() + 1) * sizeof(wchar_t);
+        LPVOID remoteMemory = VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!remoteMemory) {
+            err = L"VirtualAllocEx failed (error " + std::to_wstring(GetLastError()) + L")";
+            CloseHandle(process);
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+
+        if (!WriteProcessMemory(process, remoteMemory, path.c_str(), bytes, nullptr)) {
+            err = L"WriteProcessMemory failed (error " + std::to_wstring(GetLastError()) + L")";
+            VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
+            CloseHandle(process);
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+
+        HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+        auto loadLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(kernel, "LoadLibraryW"));
+        if (!loadLibrary) {
+            err = L"Unable to resolve LoadLibraryW";
+            VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
+            CloseHandle(process);
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+
+        HANDLE thread = CreateRemoteThread(process, nullptr, 0, loadLibrary, remoteMemory, 0, nullptr);
+        if (!thread) {
+            err = L"CreateRemoteThread failed (error " + std::to_wstring(GetLastError()) + L")";
+            VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
+            CloseHandle(process);
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+
+        DWORD waitResult = WaitForSingleObject(thread, 5000);
+        DWORD exitCode = 0;
+        GetExitCodeThread(thread, &exitCode);
+
+        CloseHandle(thread);
         VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
         CloseHandle(process);
+
+        if (waitResult == WAIT_TIMEOUT) {
+            err = L"Injection thread timed out; target may be suspended or blocking remote threads.";
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+        if (waitResult == WAIT_FAILED) {
+            err = L"Injection thread wait failed (error " + std::to_wstring(GetLastError()) + L")";
+            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
+            return false;
+        }
+        if (exitCode != 0) {
+            KRKR_LOG_INFO("Injected krkr_speed_hook.dll into pid " + std::to_string(pid) +
+                          " using path candidate " + std::to_string(attemptIndex));
+            return true;
+        }
+
+        err = L"Remote LoadLibraryW returned 0 for path: " + path;
+        attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
         return false;
+    };
+
+    auto buildCandidates = [&](const std::wstring &basePath) {
+        std::vector<std::wstring> out;
+        if (!basePath.empty()) out.push_back(basePath);
+        wchar_t shortBuf[MAX_PATH] = {};
+        DWORD shortLen = GetShortPathNameW(basePath.c_str(), shortBuf, static_cast<DWORD>(std::size(shortBuf)));
+        if (shortLen > 0 && shortLen < std::size(shortBuf)) {
+            out.emplace_back(shortBuf, shortLen);
+        }
+        return out;
+    };
+
+    std::vector<std::wstring> candidates = buildCandidates(dllPath);
+    std::wstring lastError;
+    size_t attemptIdx = 0;
+    for (const auto &p : candidates) {
+        if (p.empty()) continue;
+        if (tryLoad(p, attemptIdx++, lastError)) {
+            return true;
+        }
     }
 
-    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-    auto loadLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(kernel, "LoadLibraryW"));
-    if (!loadLibrary) {
-        error = L"Unable to resolve LoadLibraryW";
-        VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-        CloseHandle(process);
-        return false;
+    // If initial attempts failed, try copying into the target's exe directory and retry.
+    const auto targetDir = getProcessDirectory(pid);
+    if (!targetDir.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(targetDir, ec);
+        const auto targetDll = targetDir / std::filesystem::path(dllPath).filename();
+        const auto dep = std::filesystem::path(dllPath).parent_path() / L"SoundTouch.dll";
+        bool copied = false;
+        bool copiedDep = false;
+        if (std::filesystem::exists(dllPath)) {
+            std::filesystem::copy_file(dllPath, targetDll, std::filesystem::copy_options::overwrite_existing, ec);
+            copied = !ec;
+            if (ec) {
+                attemptNotes.push_back(L"Copy to target dir failed for hook: " + targetDll.wstring() +
+                                       L" (error " + std::to_wstring(ec.value()) + L")");
+            }
+        }
+        std::filesystem::path targetDep;
+        if (std::filesystem::exists(dep)) {
+            targetDep = targetDir / dep.filename();
+            std::filesystem::copy_file(dep, targetDep, std::filesystem::copy_options::overwrite_existing, ec);
+            copiedDep = !ec;
+            if (ec) {
+                attemptNotes.push_back(L"Copy to target dir failed for SoundTouch: " + targetDep.wstring() +
+                                       L" (error " + std::to_wstring(ec.value()) + L")");
+            }
+        }
+        if (copied) {
+            auto more = buildCandidates(targetDll.wstring());
+            for (const auto &p : more) {
+                if (p.empty()) continue;
+                if (tryLoad(p, attemptIdx++, lastError)) {
+                    return true;
+                }
+            }
+        }
     }
 
-    HANDLE thread = CreateRemoteThread(process, nullptr, 0, loadLibrary, remoteMemory, 0, nullptr);
-    if (!thread) {
-        error = L"CreateRemoteThread failed (error " + std::to_wstring(GetLastError()) + L")";
-        VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-        CloseHandle(process);
-        return false;
+    error = L"DLL injection returned 0 (remote LoadLibraryW failed). ";
+    if (!attemptNotes.empty()) {
+        error += L"Attempts: ";
+        for (size_t i = 0; i < attemptNotes.size(); ++i) {
+            if (i) error += L" | ";
+            error += attemptNotes[i];
+        }
+    } else {
+        error += L"Tried path: " + dllPath;
+        if (candidates.size() > 1 && !candidates[1].empty()) {
+            error += L" and short path: " + candidates[1];
+        }
     }
-
-    WaitForSingleObject(thread, 5000);
-    DWORD exitCode = 0;
-    GetExitCodeThread(thread, &exitCode);
-
-    CloseHandle(thread);
-    VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-    CloseHandle(process);
-
-    if (exitCode == 0) {
-        error = L"DLL injection returned 0 (remote LoadLibraryW failed). Ensure matching arch, DLL exists at " +
-                dllPath + L", dependencies like SoundTouch.dll are beside it, target not protected, and controller runs with needed privileges.";
-        return false;
+    if (!targetDir.empty()) {
+        error += L"; target dir: " + targetDir.wstring();
     }
-
-    KRKR_LOG_INFO("Injected krkr_speed_hook.dll into pid " + std::to_string(pid));
-    return true;
+    error += L". Ensure matching arch, DLL exists, dependencies like SoundTouch.dll are beside it, target not protected, and controller runs with needed privileges.";
+    if (!lastError.empty()) {
+        error += L" Last attempt: " + lastError;
+    }
+    return false;
 }
 
 void refreshProcessList(HWND combo, HWND statusLabel) {
@@ -424,6 +589,22 @@ bool getDllArch(const std::filesystem::path &path, ProcessArch &archOut, std::ws
     return true;
 }
 
+std::filesystem::path getProcessDirectory(DWORD pid) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) {
+        return {};
+    }
+    wchar_t buffer[MAX_PATH] = {};
+    DWORD size = static_cast<DWORD>(std::size(buffer));
+    if (QueryFullProcessImageNameW(process, 0, buffer, &size) == 0) {
+        CloseHandle(process);
+        return {};
+    }
+    CloseHandle(process);
+    std::filesystem::path exePath(buffer);
+    return exePath.parent_path();
+}
+
 void handleApply(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
@@ -492,7 +673,9 @@ void handleApply(HWND hwnd) {
                    proc.name.c_str(), proc.pid, speed, gateChecked ? L"on" : L"off", duration);
         setStatus(statusLabel, message);
     } else {
-        setStatus(statusLabel, L"Injection failed: " + error);
+        std::wstring detail = L" [controller=" + describeArch(selfArch) + L", target=" + describeArch(targetArch) +
+                              L", dll=" + describeArch(dllArch) + L"]";
+        setStatus(statusLabel, L"Injection failed: " + error + detail);
     }
 }
 

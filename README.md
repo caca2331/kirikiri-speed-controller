@@ -68,13 +68,20 @@ ctest --test-dir build -V
   buffers shorter than the threshold are stretched; uncheck to process all audio. The GUI now detects bitness mismatches
   before injection—run the Win32 build for 32-bit games and the x64 build for 64-bit games. Closing the window cleanly
   exits the controller.
+- Audio hooks are now active for XAudio2 (2.7/2.8/2.9) and DirectSound: IXAudio2::CreateSourceVoice/SubmitSourceBuffer
+  and IDirectSoundBuffer::Unlock are patched, and PCM is routed through the DSP with speed + length gate applied.
 - If injection fails with “LoadLibrary returned 0,” ensure you launched the controller that matches the target bitness, the selected hook DLL matches that bitness (the GUI now pre-checks), `SoundTouch.dll` is beside it, and the controller is run as Administrator if the game is elevated or protected.
+- The controller tries to enable SeDebugPrivilege automatically before injection, but you may still need to run it as
+  Administrator when the target is elevated/protected.
 - `dsp_smoke.exe` prints progress to stdout and logs so the run is traceable even when launched by double-clicking.
 
 ## Next Steps
 - Wire MinHook to the XAudio2 and DirectSound entry points.
 - Replace the DSP fallback with the tuned SoundTouch configuration (sequence/overlap/seek window).
 - Implement voice classification heuristics and IPC so the controller UI can drive live speed changes inside injected games.
+
+## For AI Agents
+- also read guide.md and Agents.md
 
 ---
 
@@ -144,7 +151,10 @@ ctest --test-dir build -V
   速（推荐0.75–2倍），点击“Hook + Apply”尝试从同目录注入`krkr_speed_hook.dll`；旁边的复选框+秒数输入（默认30秒）
   用于按长度区分，勾选时只对短于阈值的缓冲做变速，取消勾选则全部变速。界面会提前检测架构是否匹配——32位游戏请使用Win32构建，
   64位游戏使用x64构建。关闭窗口即退出控制器。
+- 现已对XAudio2（2.7/2.8/2.9）与DirectSound生效：已Patch IXAudio2::CreateSourceVoice/SubmitSourceBuffer 和
+  IDirectSoundBuffer::Unlock，PCM会经过DSP并套用速度与长度门限。
 - 如果提示“LoadLibrary returned 0”，请确认控制器与目标进程位数一致、所选Hook DLL位数一致（界面会预检查）、`SoundTouch.dll`与其同目录，且在目标以管理员/受保护运行时以管理员方式运行控制器。
+- 控制器在注入前会尝试自动开启SeDebugPrivilege，但若目标是提权/受保护进程，仍可能需要以管理员身份运行控制器。
 - `dsp_smoke.exe` 会同时输出到控制台和日志，即使双击运行控制台快速关闭，也能在日志中查看结果。
 
 ## 下一步计划

@@ -47,7 +47,17 @@ function(stage name build_dir dist_dir)
             message(WARNING "[${name}] Missing ${src}; skipping copy")
             continue()
         endif()
-        file(COPY "${src}" DESTINATION "${dist_dir}")
+        set(dst "${dist_dir}/${f}")
+        if(EXISTS "${dst}")
+            file(REMOVE "${dst}")
+        endif()
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${src}" "${dst}"
+            RESULT_VARIABLE copy_r
+        )
+        if(NOT copy_r EQUAL 0)
+            message(WARNING "[${name}] Failed to copy ${src} to ${dst} (result ${copy_r}); file may be locked or in use")
+        endif()
     endforeach()
 endfunction()
 

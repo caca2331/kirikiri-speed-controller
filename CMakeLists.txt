@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    # Static CRT to avoid requiring VC++ redist on target machines.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 option(BUILD_GUI "Build the optional controller GUI" ON)
 option(USE_SOUNDTOUCH "Enable SoundTouch based DSP (requires library)" OFF)
 option(BUILD_TESTS "Build DSP smoke tests (desktop only)" ON)
@@ -63,8 +68,9 @@ if(WIN32)
     add_library(krkr_hook_core STATIC
         src/hook/XAudio2Hook.cpp
         src/hook/DirectSoundHook.cpp
+        src/hook/HookUtils.cpp
     )
-    target_link_libraries(krkr_hook_core PUBLIC krkr_common)
+    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound xaudio2)
     target_include_directories(krkr_hook_core PUBLIC src)
 
     add_library(krkr_speed_hook SHARED
