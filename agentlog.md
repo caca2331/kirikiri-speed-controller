@@ -5,3 +5,5 @@
 2025-12-07 20:58: Added architecture detection before injection so the GUI blocks mismatched bitness, and documented Win32/x64 build guidance in both README languages to prevent “DLL injection returned 0” errors.
 2025-12-07 21:20: Taught the injector to auto-pick x86 vs x64 hook DLLs (searching x86/ and x64/ folders or suffixed names) and expanded README (EN/ZH) with dual-arch packaging layout so both 32-bit and 64-bit processes are supported.
 2025-12-07 21:42: Added a CMake target+script (`dist_dual_arch`) to configure/build both x64 and x86 outputs, stage them into `dist/{x64,x86}`, documented the one-command workflow in README (EN/ZH), and ignored the generated dist/build.x86/build.x64 folders.
+2025-12-07 22:30: Hardened injection diagnostics: pre-check hook DLL architecture against the target, ensure absolute DLL paths, and expanded LoadLibrary failure messaging; added README (EN/ZH) troubleshooting notes for “LoadLibrary returned 0”.
+2025-12-07 23:01: Added a local preflight LoadLibrary check before injection to catch missing dependencies up front, surfacing the OS error code if the DLL cannot be loaded even in the controller process.

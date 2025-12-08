@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cwchar>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -278,6 +279,15 @@ void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes)
 }
 
 bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &error) {
+    // Preflight: ensure we can load the DLL locally (catches missing dependencies).
+    HMODULE localHandle = LoadLibraryW(dllPath.c_str());
+    if (!localHandle) {
+        error = L"Preflight LoadLibraryW failed locally (error " + std::to_wstring(GetLastError()) +
+                L"); check dependencies beside the DLL.";
+        return false;
+    }
+    FreeLibrary(localHandle);
+
     HANDLE process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
                                      PROCESS_VM_WRITE | PROCESS_VM_READ,
                                  FALSE, pid);
@@ -327,7 +337,8 @@ bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &
     CloseHandle(process);
 
     if (exitCode == 0) {
-        error = L"DLL injection returned 0 (check architecture match)";
+        error = L"DLL injection returned 0 (remote LoadLibraryW failed). Ensure matching arch, DLL exists at " +
+                dllPath + L", dependencies like SoundTouch.dll are beside it, target not protected, and controller runs with needed privileges.";
         return false;
     }
 
@@ -368,7 +379,7 @@ bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &er
 
     for (const auto &candidate : candidates) {
         if (!candidate.empty() && std::filesystem::exists(candidate)) {
-            outPath = candidate.wstring();
+            outPath = std::filesystem::absolute(candidate).wstring();
             return true;
         }
     }
@@ -379,6 +390,38 @@ bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &er
         error = L"Matching hook DLL not found. Place x64/krkr_speed_hook.dll (or krkr_speed_hook64.dll) next to the controller.";
     }
     return false;
+}
+
+bool getDllArch(const std::filesystem::path &path, ProcessArch &archOut, std::wstring &error) {
+    archOut = ProcessArch::Unknown;
+    if (!std::filesystem::exists(path)) {
+        error = L"Hook DLL not found: " + path.wstring();
+        return false;
+    }
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        error = L"Unable to open DLL to read architecture: " + path.wstring();
+        return false;
+    }
+
+    std::uint8_t header[0x44] = {};
+    file.read(reinterpret_cast<char *>(header), sizeof(header));
+    if (file.gcount() < 0x44) {
+        error = L"Unable to read DLL headers for: " + path.wstring();
+        return false;
+    }
+    const std::uint32_t peOffset = *reinterpret_cast<const std::uint32_t *>(header + 0x3c);
+    file.seekg(peOffset + 4, std::ios::beg);
+    std::uint16_t machine = 0;
+    file.read(reinterpret_cast<char *>(&machine), sizeof(machine));
+    if (file.gcount() != sizeof(machine)) {
+        error = L"Unable to read DLL machine type: " + path.wstring();
+        return false;
+    }
+
+    archOut = classifyMachine(machine);
+    return true;
 }
 
 void handleApply(HWND hwnd) {
@@ -426,6 +469,19 @@ void handleApply(HWND hwnd) {
     std::wstring dllPath;
     if (!selectHookForArch(targetArch, dllPath, archError)) {
         setStatus(statusLabel, archError);
+        return;
+    }
+
+    ProcessArch dllArch = ProcessArch::Unknown;
+    std::wstring dllArchError;
+    if (!getDllArch(dllPath, dllArch, dllArchError)) {
+        setStatus(statusLabel, dllArchError);
+        return;
+    }
+    if (targetArch != ProcessArch::Unknown && dllArch != ProcessArch::Unknown && targetArch != dllArch) {
+        std::wstring msg = L"Hook DLL arch (" + describeArch(dllArch) + L") does not match target (" +
+                           describeArch(targetArch) + L"). Pick the correct dist folder.";
+        setStatus(statusLabel, msg);
         return;
     }
 
