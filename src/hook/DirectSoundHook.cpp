@@ -41,9 +41,9 @@ void DirectSoundHook::initialize() {
         if (n == 0 || n >= std::size(buf)) return false;
         return wcscmp(buf, L"1") == 0;
     };
-    // Opt-in only: require KRKR_ENABLE_DS=1 to activate DS hooks.
-    if (!envFlagOn(L"KRKR_ENABLE_DS")) {
-        KRKR_LOG_INFO("KRKR_ENABLE_DS not set; DirectSound hooks disabled");
+    // Default ON; allow opt-out with KRKR_SKIP_DS=1 for troubleshooting.
+    if (envFlagOn(L"KRKR_SKIP_DS")) {
+        KRKR_LOG_INFO("KRKR_SKIP_DS set; DirectSound hooks disabled");
         return;
     }
     m_bgmSecondsGate = envFloat(L"KRKR_DS_BGM_SECS", 15.0f);
@@ -291,7 +291,11 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     static bool freqMode = []{
         wchar_t buf[8] = {};
         DWORD n = GetEnvironmentVariableW(L"KRKR_DS_USE_FREQ", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
+        // Default ON unless explicitly set to "0"
+        if (n > 0 && n < std::size(buf)) {
+            return wcscmp(buf, L"0") != 0;
+        }
+        return true;
     }();
     static bool disableGate = []{
         wchar_t buf[8] = {};
@@ -362,12 +366,25 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 static_cast<float>(frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
             const float totalSec =
                 static_cast<float>(info.processedFrames + frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
-            const bool tooShort = durationSec < 0.5f; // skip tempo on tiny chunks to avoid choppy loops
+            // skip only the very first tiny chunk (<0.5s) of a new buffer; once total >0.5s, process normally
+            const bool tooShort = (durationSec < 0.5f) && (totalSec < 0.5f);
             const bool shouldLog = info.unlockCount <= 5 || (info.unlockCount % 50 == 0);
             // Loop-based BGM detection: only for large/looping buffers, skip small voice buffers.
             const float loopDetectThreshold = std::max<float>(2.0f, m_bgmSecondsGate * 0.25f);
+            const bool musicCandidate = (info.channels > 1) || (info.approxSeconds >= 1.5f);
+            // Fast-path: short stereo loops are very likely BGM; mark after a couple unlocks.
+            if (!m_disableBgm && info.channels > 1 && info.approxSeconds <= 0.30f && info.unlockCount >= 2 &&
+                !info.isLikelyBgm) {
+                info.isLikelyBgm = true;
+                if (shouldLog) {
+                    KRKR_LOG_INFO("DS buffer marked BGM via stereo-short heuristic buf=" +
+                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                  " dur=" + std::to_string(info.approxSeconds) +
+                                  " unlocks=" + std::to_string(info.unlockCount));
+                }
+            }
             if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm && info.bufferBytes > 0 &&
-                info.approxSeconds >= loopDetectThreshold) {
+                info.approxSeconds >= loopDetectThreshold && musicCandidate) {
                 info.loopBytesAccum += combined.size();
                 const bool oneLoop = info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes);
                 const bool twoLoops = info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes) * 2ULL;
@@ -390,7 +407,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                       std::to_string(info.bufferBytes * 2ULL));
                     }
                 }
-            } else if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm) {
+            } else if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm && musicCandidate) {
                 // Streaming/rolling small buffers: early mark if they churn rapidly.
                 if ((info.unlockCount >= 8 && totalSec >= 3.0f && info.approxSeconds <= 1.5f) ||
                     (totalSec >= 4.0f && info.unlockCount >= 12) ||
@@ -404,7 +421,8 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     }
                 }
             }
-            const bool isBgm = info.isLikelyBgm && !m_disableBgm;
+            // Treat all stereo buffers as BGM candidates by default; only process if forced.
+            const bool isBgm = ((info.channels > 1) || info.isLikelyBgm) && !m_disableBgm;
             const bool doDsp = !disableDsp && !tooShort && (!isBgm || m_forceApply) && (!gate || totalSec <= gateSeconds);
             if (shouldLog) {
                 KRKR_LOG_DEBUG("DS Unlock: buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
@@ -418,7 +436,18 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                " apply=" + (doDsp ? "1" : "0") +
                                " speed=" + std::to_string(userSpeed));
             }
-            if (doDsp && freqMode) {
+            auto fillRepeated = [](std::vector<std::uint8_t> &out, std::size_t targetBytes) {
+                if (out.empty() || targetBytes <= out.size()) return;
+                std::vector<std::uint8_t> filled(targetBytes);
+                const std::size_t n = out.size();
+                for (std::size_t i = 0; i < targetBytes; ++i) {
+                    filled[i] = out[i % n];
+                }
+                out.swap(filled);
+            };
+
+            const bool freqPath = freqMode;
+            if (doDsp && freqPath) {
                 const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
                 const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
                 double clampedD = scaled;
@@ -436,6 +465,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                        std::to_string(reinterpret_cast<std::uintptr_t>(self)));
                     }
                 } else {
+                    fillRepeated(out, combined.size());
                     if (out.size() >= combined.size()) {
                         std::copy_n(out.data(), combined.size(), combined.begin());
                     } else {
@@ -456,6 +486,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                        std::to_string(reinterpret_cast<std::uintptr_t>(self)));
                     }
                 } else {
+                    fillRepeated(out, combined.size());
                     if (out.size() >= combined.size()) {
                         std::copy_n(out.data(), combined.size(), combined.begin());
                     } else {

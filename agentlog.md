@@ -41,3 +41,13 @@
 2025-12-10 01:45: Added duration-based BGM marking for small streaming buffers (>=BGM_SECS total, many unlocks) so BGM stops zig-zagging even when buffer size is small; rebuilt and restaged x86 binaries.
 2025-12-10 02:05: Further sped up BGM detection: lowered loop threshold (gate*0.25, min 2s) and added early duration-based tagging for fast-churning small buffers (>=3–4s), rebuilt and restaged x86.
 2025-12-10 02:20: Logged that BGM buffers in the game HaremKingdom were ~0.10s (17640 bytes at 44.1kHz stereo) with an initial 0.40s chunk; added a 0.5s minimum chunk length check to skip DSP on tiny buffers (commented in code), rebuilt/restaged x86.
+2025-12-10 02:35: Relaxed the 0.5s skip so only the first sub-0.5s chunk is bypassed (once total>0.5s we process all chunks); rebuilt/restaged x86 for the second test game (tenshi_sz.exe) where 0.125s blocks needed DSP.
+2025-12-10 02:50: Tightened BGM marking to only consider stereo or >=1.5s buffers; small mono voice buffers can no longer be mis-tagged as BGM. Rebuilt/restaged x86.
+2025-12-10 03:05: Defaulted DirectSound freq-mode ON (unless KRKR_DS_USE_FREQ=0) so small 0.125s voice chunks speed up via SetFrequency + pitch compensate, reducing zig-zag gaps; rebuilt/restaged x86.
+2025-12-10 03:25: Added a stereo-short heuristic: stereo chunks <=0.30s are marked BGM after 2 unlocks (unless disabled), so BGM stops speeding up immediately while mono voices keep processing; rebuilt/restaged x86.
+2025-12-10 03:40: tenshi_sz.exe: voices (mono, 1.0s + 0.125s chunks) speed up correctly; BGM (stereo 0.125s chunks) stays at normal speed after the stereo-short heuristic.
+2025-12-10 03:55: Enabled DirectSound hooks by default (opt-out with KRKR_SKIP_DS) so XAudio2-only games that actually use dsound still get processed; rebuilt/restaged x86.
+2025-12-10 04:05: For the XAudio-fallback game, stopped processing stereo buffers unless forced (channels>1 treated as BGM) to prevent BGM speeding; rebuilt/restaged x86.
+2025-12-10 04:20: Capped freq-mode to ratios <=2.0 (higher speeds fall back to tempo-only) to remove ‘aabbccdd’ stutter on tiny chunks; rebuilt/restaged x86.
+2025-12-10 04:32: To fix high-speed stutter, capped freq-mode to <=2.0x and repeat DSP output to fill chunk when it returns short data (avoids zeros causing gaps); rebuilt/restaged x86.
+2025-12-10 04:45: Documented the >2x voice repetition limitation in README (EN/ZH); advise users to stay at <=2x if they hear repeats.
