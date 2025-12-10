@@ -51,3 +51,5 @@
 2025-12-10 04:20: Capped freq-mode to ratios <=2.0 (higher speeds fall back to tempo-only) to remove ‘aabbccdd’ stutter on tiny chunks; rebuilt/restaged x86.
 2025-12-10 04:32: To fix high-speed stutter, capped freq-mode to <=2.0x and repeat DSP output to fill chunk when it returns short data (avoids zeros causing gaps); rebuilt/restaged x86.
 2025-12-10 04:45: Documented the >2x voice repetition limitation in README (EN/ZH); advise users to stay at <=2x if they hear repeats.
+2025-12-10 05:05: Removed fallback tempo path; added env KRKR_DS_WSOLA=1 to force WSOLA (tempo) instead of freq+pitch; default now stays on freq+pitch only. Rebuilt/restaged x86.
+2025-12-10 05:20: Added dynamic DS frequency cap: appliedSpeed = min(userSpeed, DSBFREQUENCY_MAX/baseRate); pitch restore now uses applied speed so 3x requests on 44.1kHz no longer mismatch after clamp. Removed WSOLA toggle for now. Rebuilt/restaged x86.

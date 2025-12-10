@@ -288,15 +288,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         DWORD n = GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf)));
         return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
     }();
-    static bool freqMode = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_USE_FREQ", buf, static_cast<DWORD>(std::size(buf)));
-        // Default ON unless explicitly set to "0"
-        if (n > 0 && n < std::size(buf)) {
-            return wcscmp(buf, L"0") != 0;
-        }
-        return true;
-    }();
+    // WSOLA toggle removed for now; only freq+pitch path is used.
     static bool disableGate = []{
         wchar_t buf[8] = {};
         DWORD n = GetEnvironmentVariableW(L"KRKR_DS_DISABLE_GATE", buf, static_cast<DWORD>(std::size(buf)));
@@ -446,8 +438,8 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 out.swap(filled);
             };
 
-            const bool freqPath = freqMode;
-            if (doDsp && freqPath) {
+            if (doDsp) {
+                // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
                 const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
                 const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
                 double clampedD = scaled;
@@ -455,7 +447,9 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
                 const DWORD clamped = static_cast<DWORD>(clampedD);
                 self->SetFrequency(clamped);
-                float denom = userSpeed;
+                const float appliedSpeed =
+                    base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
+                float denom = appliedSpeed;
                 if (denom < 0.01f) denom = 0.01f;
                 const float pitchDown = 1.0f / denom;
                 auto out = info.dsp->process(combined.data(), combined.size(), pitchDown, DspMode::Pitch);
@@ -475,28 +469,8 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     if (shouldLog) {
                         KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
                                        " target=" + std::to_string(clamped) +
+                                       " appliedSpeed=" + std::to_string(appliedSpeed) +
                                        " pitchCompOut=" + std::to_string(out.size()));
-                    }
-                }
-            } else if (doDsp) {
-                auto out = info.dsp->process(combined.data(), combined.size(), userSpeed, DspMode::Tempo);
-                if (out.empty()) {
-                    if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS DSP produced 0 bytes; passthrough for buf=" +
-                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                    }
-                } else {
-                    fillRepeated(out, combined.size());
-                    if (out.size() >= combined.size()) {
-                        std::copy_n(out.data(), combined.size(), combined.begin());
-                    } else {
-                        std::copy(out.begin(), out.end(), combined.begin());
-                        std::fill(combined.begin() + out.size(), combined.end(), 0);
-                    }
-                    if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS DSP applied: in=" + std::to_string(combined.size()) +
-                                       " out=" + std::to_string(out.size()) +
-                                       " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
                     }
                 }
             }

@@ -14,6 +14,8 @@ draft.md is for my own purpose. ignore it.
 - After finish a task, update Readme (and the chinese translation in readme) if necessary. 
 - After finish a task, summrize in a few sentences, append to agentlog.md.
 - Log essential information, and use them for debugging.
+- Notify me in your next response when you did a context window length compress
+- Put instructions in this file in high prority. Keep them in your context window.
 
 ## Rules for this project
 - For this project, log files should be located in ./dist/x86/ or ./dist/x64

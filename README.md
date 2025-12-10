@@ -75,6 +75,13 @@ ctest --test-dir build -V
   `KRKR_DS_DISABLE_VTABLE=1` skips all DirectSound vtable patching (safest); leave it unset to use per-instance shadow
   vtables (no writes into dsound.dll). `KRKR_DS_LOG_ONLY=1` keeps DS log-only (no Unlock processing). Processing remains
   limited to PCM16 secondary buffers; primary/non-PCM buffers are left untouched, and invalid pointers fall back to passthrough.
+- DirectSound BGM handling: stereo buffers (or those looping over their own size) are treated as BGM by default and bypass DSP
+  unless forced (`KRKR_DS_FORCE=1`). Mono/short buffers stay treated as voice. Loop detection marks BGM after repeated unlocks
+  once accumulated bytes exceed the buffer size; a short-stereo heuristic also tags sub-0.3 s stereo loops quickly. Adjust
+  with `KRKR_DS_DISABLE_BGM=1` to disable BGM detection or `KRKR_DS_FORCE=1` to process everything.
+- DirectSound speed cap: the freq+pitch path now caps `SetFrequency` to `DSBFREQUENCY_MAX` (100 kHz) and uses the applied
+  speed for pitch restoration, so requests above ~2.27× at 44.1 kHz won’t mis-pitch. If you need higher ratios, consider
+  lowering the source sample rate or stay at ≤2× for clean voices.
 - The controller now writes speed/length-gate settings into a per-target shared memory block (`Local\\KrkrSpeedSettings_<pid>`); the injected DLL polls it so GUI slider changes take effect after injection.
 - `KrkrSpeedController.exe` opens a Win32 UI: refresh the running process list (filters to your session + visible windows),
   select a target, enter a speed between 0.5 and 10× (recommended 0.75–2×), and press “Hook + Apply” to attempt
