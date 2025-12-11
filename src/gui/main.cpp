@@ -1,10 +1,23 @@
-#include "../hook/XAudio2Hook.h"
-#include <iostream>
+#include "ui.h"
+#include <Windows.h>
+#include <filesystem>
+#include <fstream>
 
-int main() {
-    std::cout << "KrkrSpeedController stub running.\n";
-    std::cout << "Use this utility to inject krkr_speed_hook.dll and control tempo." << std::endl;
-    krkrspeed::XAudio2Hook::instance().setUserSpeed(1.0f);
-    std::cout << "Default speed set to 1.0x" << std::endl;
-    return 0;
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
+    // Hint the hook DLL to log beside the controller.
+    wchar_t modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) != 0) {
+        std::filesystem::path exe(modulePath);
+        auto dir = exe.parent_path();
+        SetEnvironmentVariableW(L"KRKR_LOG_DIR", dir.wstring().c_str());
+        std::error_code ec;
+        auto hintFile = std::filesystem::temp_directory_path(ec) / "krkr_log_dir.txt";
+        if (!ec) {
+            std::ofstream out(hintFile);
+            if (out) {
+                out << dir.u8string();
+            }
+        }
+    }
+    return krkrspeed::ui::runController(hInstance, nCmdShow);
 }

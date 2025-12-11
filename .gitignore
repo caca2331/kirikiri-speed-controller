@@ -1,1 +1,11 @@
- 
+example/
+build/
+build32/
+build.x64/
+build.x86/
+dist/
+draft.md
+guide.md
+agentlog.md
+runtime-notes.md
+tasks.md
