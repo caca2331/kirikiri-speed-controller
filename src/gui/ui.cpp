@@ -34,6 +34,7 @@ constexpr int kStatusLabelId = 1005;
 constexpr int kLinkId = 1006;
 constexpr int kPathEditId = 1007;
 constexpr int kLaunchButtonId = 1008;
+constexpr int kIgnoreBgmCheckId = 1009;
 
 struct ProcessInfo {
     std::wstring name;
@@ -57,6 +58,7 @@ struct AppState {
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::map<DWORD, HANDLE> sharedMaps;
     std::map<DWORD, krkrspeed::SharedSettings *> sharedViews;
+    std::uint32_t stereoBgmMode = 1;
 };
 
 AppState g_state;
@@ -663,10 +665,12 @@ void cleanupSharedMaps() {
 void handleApply(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
+    HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);
     HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
 
     const float speed = readSpeedFromEdit(editSpeed);
     g_state.currentSpeed = speed;
+    g_state.forceAll = (ignoreBgm && SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
     krkrspeed::XAudio2Hook::instance().setUserSpeed(speed);
     krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
@@ -842,12 +846,14 @@ void layoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     const int padding = 12;
-    const int labelWidth = 200;
+    const int labelWidth = 120;
     const int comboHeight = 24;
     const int editWidth = 120;
     const int buttonWidth = 120;
     const int wideEditWidth = rc.right - labelWidth - buttonWidth - padding * 3;
     const int rowHeight = 28;
+    const int checkboxHeight = 20;
+    const int statusHeight = comboHeight * 2;
 
     int x = padding;
     int y = padding;
@@ -864,15 +870,17 @@ void layoutControls(HWND hwnd) {
 
     y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kSpeedEditId), nullptr, x + labelWidth, y, editWidth, comboHeight, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelWidth + editWidth + padding, y, 140, checkboxHeight,
+                 SWP_NOZORDER);
     SetWindowPos(GetDlgItem(hwnd, kApplyButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
                  SWP_NOZORDER);
 
     y += rowHeight;
-    SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, comboHeight, SWP_NOZORDER);
-    y += rowHeight;
+    SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, statusHeight, SWP_NOZORDER);
 
     if (g_link) {
-        SetWindowPos(g_link, nullptr, x, y - 4, rc.right - padding * 2, comboHeight + 4, SWP_NOZORDER);
+        int linkHeight = comboHeight + 4;
+        SetWindowPos(g_link, nullptr, x, rc.bottom - padding - linkHeight, rc.right - padding * 2, linkHeight, SWP_NOZORDER);
     }
 }
 
@@ -902,27 +910,32 @@ void addTooltip(HWND tooltip, HWND control, const wchar_t *text) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
-        CreateWindowExW(0, L"STATIC", L"Process", WS_CHILD | WS_VISIBLE, 12, 12, 90, 20, hwnd, nullptr, nullptr, nullptr);
+        CreateWindowExW(0, L"STATIC", L"Process", WS_CHILD | WS_VISIBLE, 12, 12, 120, 20, hwnd, nullptr, nullptr, nullptr);
         RECT rcClient{};
         GetClientRect(hwnd, &rcClient);
-        int initialWidth = rcClient.right - 200 - 120 - 12 * 3;
+        int initialWidth = rcClient.right - 120 - 120 - 12 * 3;
         HWND combo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
-                                     90, 10, initialWidth, 200, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProcessComboId)), nullptr, nullptr);
+                                     132, 10, initialWidth, 200, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProcessComboId)), nullptr, nullptr);
         HWND refresh = CreateWindowExW(0, L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
-        CreateWindowExW(0, L"STATIC", L"Game path", WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
+        CreateWindowExW(0, L"STATIC", L"Game Path", WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
         HWND pathEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                         140, 38, initialWidth, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPathEditId)), nullptr, nullptr);
         HWND launch = CreateWindowExW(0, L"BUTTON", L"Launch + Hook", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                       0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
 
-        CreateWindowExW(0, L"STATIC", L"Speed (suggest 0.5-2.5)", WS_CHILD | WS_VISIBLE, 12, 68, 220, 20, hwnd, nullptr, nullptr, nullptr);
+        CreateWindowExW(0, L"STATIC", L"Speed (0.5-2.3)", WS_CHILD | WS_VISIBLE, 12, 68, 120, 20, hwnd, nullptr, nullptr, nullptr);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"2.00",
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                          140, 66, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
+        HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"Ignore BGM", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                         140 + 80 + 12, 66, 140, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
+        if (ignoreBgm) {
+            SendMessageW(ignoreBgm, BM_SETCHECK, g_state.forceAll ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
         HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      0, 66, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
 
@@ -959,6 +972,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         addTooltip(tooltip, launch, L"Launch the game (suspended) and inject matching hook automatically");
         addTooltip(tooltip, speedEdit, L"Target speed (0.5-10.0x, recommended 0.75-2.0x)");
         addTooltip(tooltip, apply, L"Inject DLL and apply speed + gating settings");
+        addTooltip(tooltip, ignoreBgm, L"Ignore BGM detection (process all audio at selected speed)");
 
         if (!g_initialOptions.launchPath.empty()) {
             SetWindowTextW(pathEdit, g_initialOptions.launchPath.c_str());
@@ -1014,6 +1028,7 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.bgmSeconds = opts.bgmSeconds;
     g_state.gateSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
+    g_state.stereoBgmMode = opts.stereoBgmMode;
 }
 
 ControllerOptions getInitialOptions() {

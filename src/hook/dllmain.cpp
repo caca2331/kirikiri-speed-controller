@@ -317,6 +317,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 dsCfg.disableBgm = haveShared ? (shared.disableBgm != 0) : false;
                 dsCfg.forceAll = haveShared ? (shared.forceAll != 0) : false;
                 dsCfg.bgmGateSeconds = haveShared ? shared.bgmSecondsGate : 60.0f;
+                dsCfg.stereoBgmMode = haveShared ? shared.stereoBgmMode : 1u;
                 krkrspeed::DirectSoundHook::instance().configure(dsCfg);
 
                 KRKR_LOG_INFO("Init: starting DirectSoundHook::initialize");

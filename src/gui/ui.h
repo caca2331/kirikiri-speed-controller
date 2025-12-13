@@ -18,6 +18,7 @@ struct ControllerOptions {
     bool forceAll = false;
     float bgmSeconds = 60.0f;
     std::wstring launchPath;
+    std::uint32_t stereoBgmMode = 1;
 };
 
 void setInitialOptions(const ControllerOptions &opts);

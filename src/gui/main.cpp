@@ -20,6 +20,7 @@ struct CliOptions {
     bool forceAll = false;
     float bgmSeconds = 60.0f;
     std::filesystem::path launchPath;
+    std::uint32_t stereoBgmMode = 1;
 };
 
 CliOptions parseArgs() {
@@ -60,6 +61,13 @@ CliOptions parseArgs() {
             opts.forceAll = true;
         } else if (arg == L"--disable-bgm") {
             opts.disableBgm = true;
+        } else if (arg == L"--mark-stereo-bgm") {
+            std::wstring v;
+            if (next(v)) {
+                if (_wcsicmp(v.c_str(), L"aggressive") == 0) opts.stereoBgmMode = 0;
+                else if (_wcsicmp(v.c_str(), L"hybrid") == 0) opts.stereoBgmMode = 1;
+                else if (_wcsicmp(v.c_str(), L"none") == 0) opts.stereoBgmMode = 2;
+            }
         } else if (arg == L"--launch" || arg == L"-l") {
             std::wstring v;
             if (next(v)) {
@@ -82,10 +90,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     controllerOpts.skipXAudio2 = opts.skipXa;
     controllerOpts.safeMode = opts.safeMode;
     controllerOpts.disableVeh = opts.disableVeh;
-    controllerOpts.disableBgm = opts.disableBgm;
+   controllerOpts.disableBgm = opts.disableBgm;
     controllerOpts.forceAll = opts.forceAll;
     controllerOpts.bgmSeconds = opts.bgmSeconds;
     controllerOpts.launchPath = opts.launchPath.wstring();
+    controllerOpts.stereoBgmMode = opts.stereoBgmMode;
     krkrspeed::ui::setInitialOptions(controllerOpts);
     krkrspeed::SetLoggingEnabled(opts.enableLog);
 

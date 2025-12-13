@@ -18,6 +18,7 @@ struct SharedSettings {
     std::uint32_t disableBgm = 0;
     std::uint32_t forceAll = 0;
     float bgmSecondsGate = 60.0f;
+    std::uint32_t stereoBgmMode = 1; // 0=aggressive,1=hybrid(default),2=none
 };
 
 inline std::wstring BuildSharedSettingsName(std::uint32_t pid) {

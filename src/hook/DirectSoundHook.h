@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <chrono>
 #include "../common/DspPipeline.h"
 #include "../common/VoiceContext.h"
 
@@ -21,8 +22,11 @@ public:
         bool disableBgm = false;
         bool forceAll = false;
         float bgmGateSeconds = 60.0f;
+        std::uint32_t stereoBgmMode = 1; // 0 aggressive,1 hybrid(default),2 none
     };
     void configure(const Config &cfg);
+
+    void applySharedSettingsFallback();
 
     // Allow late binding when DirectSoundCreate8 is resolved dynamically.
     void setOriginalCreate8(void *fn);
@@ -78,9 +82,9 @@ private:
         bool loggedFormat = false;
         std::unique_ptr<DspPipeline> dsp;
         std::uint64_t unlockCount = 0;
-        std::uint64_t lastLogCount = 0;
         std::uint64_t processedFrames = 0;
-        std::uint64_t loopBytesAccum = 0;
+        DWORD currentFrequency = 0;
+        bool freqDirty = false;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;
     std::set<std::string> m_loggedFormats;
@@ -94,8 +98,13 @@ private:
     bool m_disableBgm = false;
     bool m_forceApply = false;
     float m_bgmSecondsGate = 60.0f;
-    bool m_loopDetect = true;
     Config m_config{};
+    std::atomic<bool> m_seenMono{false};
+    std::atomic<bool> m_seenStereo{false};
+    std::atomic<bool> m_fragmented{true};
+    std::atomic<bool> m_loggedFragmentedClear{false};
+    std::atomic<bool> m_loggedMonoStereo{false};
+    std::unordered_map<std::uintptr_t, std::chrono::steady_clock::time_point> m_bgmReleaseTimes;
 };
 
 } // namespace krkrspeed
