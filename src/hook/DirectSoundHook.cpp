@@ -2,6 +2,7 @@
 #include "HookUtils.h"
 #include "XAudio2Hook.h"
 #include "../common/Logging.h"
+#include "../common/AudioStreamProcessor.h"
 
 #include <initguid.h>
 #include <algorithm>
@@ -266,7 +267,7 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
     info.isLikelyBgm = likelyBgm;
     info.isPcm16 = isPcm16;
     DspConfig cfg{};
-    info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
+    info.stream = std::make_unique<AudioStreamProcessor>(info.sampleRate, info.channels, info.blockAlign, cfg);
     auto key = reinterpret_cast<std::uintptr_t>(*ppDSBuffer);
     // If this buffer pointer was recently a BGM buffer and reused quickly, mark again.
     auto now = std::chrono::steady_clock::now();
@@ -418,11 +419,12 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
 
     BufferInfo *processedInfo = nullptr;
     float processedDurationSec = 0.0f;
+    float lastAppliedSpeedForPlay = 1.0f;
 
     for (int attempt = 0; attempt < 2; ++attempt) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
-        if (it != m_buffers.end() && it->second.dsp) {
+        if (it != m_buffers.end() && it->second.stream) {
             if (!it->second.isPcm16) {
                 if (!it->second.loggedFormat) {
                     KRKR_LOG_WARN("DirectSound buffer format not PCM16; skipping DSP. fmt=" +
@@ -457,18 +459,12 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 static_cast<float>(info.processedFrames + frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
             processedInfo = &info;
             processedDurationSec = durationSec;
+            const bool shouldLog = info.unlockCount <= 5 || (info.unlockCount % 50 == 0);
             // Reset stream if idle gap exceeded.
             const auto now = std::chrono::steady_clock::now();
-            if (info.lastPlayEnd.time_since_epoch().count() > 0) {
-                auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - info.lastPlayEnd).count();
-                if (idleMs > 200) {
-                    if (!info.cbuffer.empty()) {
-                        KRKR_LOG_DEBUG("DS: stream reset after idle gap buf=" +
-                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
-                                       " idleMs=" + std::to_string(idleMs));
-                    }
-                    info.cbuffer.clear();
-                }
+            if (info.stream) {
+                info.stream->resetIfIdle(now, std::chrono::milliseconds(200), shouldLog,
+                                         reinterpret_cast<std::uintptr_t>(self));
             }
             if (durationSec > 1.0f && m_fragmented.load()) {
                 m_fragmented.store(false);
@@ -477,7 +473,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 }
             }
             const bool tooShort = false; // short-guard disabled per request
-            const bool shouldLog = info.unlockCount <= 5 || (info.unlockCount % 50 == 0);
             const bool stereoIsBgm = (m_config.stereoBgmMode == 0) ||
                                      (m_config.stereoBgmMode == 1 && m_seenMono.load());
             const bool passLengthGate = totalSec > m_bgmSecondsGate;
@@ -538,64 +533,23 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     info.freqDirty = true;
                     info.currentFrequency = clamped;
                 }
-                appliedSpeed =
-                    base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
-                float denom = appliedSpeed;
-                if (denom < 0.01f) denom = 0.01f;
-                const float pitchDown = 1.0f / denom;
-                // Build streaming input: prepend any leftover output (cbuffer) to current chunk.
-                std::vector<std::uint8_t> streamIn;
-                streamIn.reserve(info.cbuffer.size() + combined.size());
-                streamIn.insert(streamIn.end(), info.cbuffer.begin(), info.cbuffer.end());
-                streamIn.insert(streamIn.end(), combined.begin(), combined.end());
-                info.cbuffer.clear();
-
-                auto out = info.dsp->process(streamIn.data(), streamIn.size(), pitchDown, DspMode::Pitch);
-                if (out.empty()) {
-                    if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS pitch-compensate produced 0 bytes; fallback passthrough buf=" +
-                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                    }
-                } else {
-                    // streaming buffer handling
-                    if (out.size() > combined.size()) {
-                        std::copy_n(out.data(), combined.size(), combined.begin());
-                        // store excess in cbuffer (cap to ~0.1s)
-                        size_t excess = out.size() - combined.size();
-                        info.cbuffer.insert(info.cbuffer.end(), out.data() + combined.size(), out.data() + out.size());
-                    } else if (out.size() < combined.size()) {
-                        size_t pad = combined.size() - out.size();
-                        std::fill(combined.begin(), combined.begin() + pad, 0);
-                        std::copy(out.begin(), out.end(), combined.begin() + pad);
-                        if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS DSP: zero-padded " + std::to_string(pad) +
-                                           " bytes (pitch) buf=" +
-                                           std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                        }
-                    } else {
-                        std::copy(out.begin(), out.end(), combined.begin());
-                    }
-                    // Cap cbuffer to ~0.1s
-                    const size_t bytesPerSec = std::max<std::size_t>(1, info.blockAlign * info.sampleRate);
-                    const size_t cap = std::max<std::size_t>(info.blockAlign ? info.blockAlign : 1, static_cast<size_t>(bytesPerSec * 0.1));
-                    if (info.cbuffer.size() > cap) {
-                        const size_t overflow = info.cbuffer.size() - cap;
-                        info.cbuffer.erase(info.cbuffer.begin(), info.cbuffer.begin() + overflow);
-                        KRKR_LOG_WARN("DS: cbuffer overflow trimmed overflow=" + std::to_string(overflow) +
-                                      " cap=" + std::to_string(cap) +
-                                      " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                appliedSpeed = base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
+                if (info.stream) {
+                    auto res = info.stream->process(combined.data(), combined.size(), appliedSpeed, shouldLog,
+                                                    reinterpret_cast<std::uintptr_t>(self));
+                    if (!res.output.empty()) {
+                        combined.swap(res.output);
                     }
                     if (shouldLog) {
                         KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
                                        " target=" + std::to_string(clamped) +
                                        " appliedSpeed=" + std::to_string(appliedSpeed) +
-                                       " pitchCompOut=" + std::to_string(out.size()) +
-                                       " cbuf=" + std::to_string(info.cbuffer.size()));
+                                       " cbuf=" + std::to_string(res.cbufferSize));
                     }
                 }
+                lastAppliedSpeedForPlay = appliedSpeed;
             }
             info.processedFrames += frames;
-            info.lastAppliedSpeed = doDsp ? appliedSpeed : 1.0f;
             break; // processed successfully
         } else {
             // Unknown buffer: try to discover format and start tracking, then loop to process.
@@ -628,7 +582,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     info.isPcm16 = (fx->wFormatTag == WAVE_FORMAT_PCM && fx->wBitsPerSample == 16);
                     info.loggedFormat = false;
                     DspConfig cfg{};
-                    info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
+                    info.stream = std::make_unique<AudioStreamProcessor>(info.sampleRate, info.channels, info.blockAlign, cfg);
                     auto key = reinterpret_cast<std::uintptr_t>(self);
                     auto now = std::chrono::steady_clock::now();
                     auto reuse = m_bgmReleaseTimes.find(key);
@@ -658,7 +612,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
             auto it2 = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
-            if (it2 == m_buffers.end() || !it2->second.dsp) {
+            if (it2 == m_buffers.end() || !it2->second.stream) {
                 KRKR_LOG_WARN("DS Unlock: tracking failed; passthrough");
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
@@ -690,10 +644,11 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     }
 
     // Track expected playback end time for stream reset heuristic.
-    float applied = processedInfo->lastAppliedSpeed > 0.01f ? processedInfo->lastAppliedSpeed : 1.0f;
+    const float applied = lastAppliedSpeedForPlay > 0.01f ? lastAppliedSpeedForPlay : 1.0f;
     const float playTime = processedDurationSec / applied;
-    processedInfo->lastPlayEnd = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(playTime));
+    if (processedInfo->stream) {
+        processedInfo->stream->recordPlaybackEnd(processedDurationSec, applied);
+    }
 
     return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
 }

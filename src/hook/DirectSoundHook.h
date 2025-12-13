@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <chrono>
 #include "../common/DspPipeline.h"
+#include "../common/AudioStreamProcessor.h"
 #include "../common/VoiceContext.h"
 
 namespace krkrspeed {
@@ -85,9 +86,7 @@ private:
         std::uint64_t processedFrames = 0;
         DWORD currentFrequency = 0;
         bool freqDirty = false;
-        std::vector<std::uint8_t> cbuffer;
-        std::chrono::steady_clock::time_point lastPlayEnd{};
-        float lastAppliedSpeed = 1.0f;
+        std::unique_ptr<AudioStreamProcessor> stream;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;
     std::set<std::string> m_loggedFormats;

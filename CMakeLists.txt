@@ -44,6 +44,7 @@ add_library(krkr_common STATIC
     src/common/DspPipeline.cpp
     src/common/Logging.cpp
     src/common/EnvOverrides.cpp
+    src/common/AudioStreamProcessor.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
 target_compile_definitions(krkr_common PUBLIC USE_SOUNDTOUCH)
