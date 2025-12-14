@@ -19,6 +19,7 @@ dist/
 Either controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the sibling dist folder.
 
 ## Usage
+- Launch `KrkrSpeedController.exe`.
 - Click `Refresh`, pick the game from the dropdown, enter the target speed, then click `Hook + Apply`.
 - If AV blocks the binaries, add an exception or temporarily disable it.
 - If the target is protected/elevated, run the controller as Administrator.
