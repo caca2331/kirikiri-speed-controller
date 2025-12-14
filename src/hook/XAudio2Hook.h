@@ -23,6 +23,7 @@ public:
 
     void setUserSpeed(float speed);
     void configureLengthGate(bool enabled, float seconds);
+    void setSkip(bool skip) { m_skip = skip; }
     float getUserSpeed() const { return m_userSpeed; }
     bool isLengthGateEnabled() const { return m_lengthGateEnabled; }
     float lengthGateSeconds() const { return m_lengthGateSeconds; }
@@ -48,7 +49,7 @@ private:
     XAudio2Hook() = default;
     void detectVersion();
     void hookEntryPoints();
-    void ensureCreateFunction();
+    void ensureCreateFunction(bool logOnFail = true);
     void bootstrapVtable();
     void scheduleBootstrapRetries();
     void scanLoadedModules();
@@ -60,11 +61,15 @@ private:
     float m_userSpeed = 2.0f;
     bool m_lengthGateEnabled = true;
     float m_lengthGateSeconds = 30.0f;
+    bool m_skip = false;
     std::map<std::uintptr_t, VoiceContext> m_contexts;
+    std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> m_pipelines;
     std::mutex m_mutex;
     std::string m_version;
     HANDLE m_sharedMapping = nullptr;
     SharedSettings *m_sharedView = nullptr;
+    std::atomic<bool> m_warnedBootstrapOnce{false};
+    std::atomic<bool> m_warnedNoExportOnce{false};
 
     // Original functions.
     using PFN_XAudio2Create = HRESULT(WINAPI *)(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR XAudio2Processor);

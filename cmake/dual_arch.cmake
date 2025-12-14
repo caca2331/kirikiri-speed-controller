@@ -15,7 +15,7 @@ function(configure_and_build name build_dir arch_triplet arch_flag)
     message(STATUS "[${name}] Configuring (${arch_flag})")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -S "${SOURCE_DIR}" -B "${build_dir}" -A "${arch_flag}"
-                -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON -DBUILD_TESTS=OFF
+                -DBUILD_GUI=ON -DBUILD_TESTS=OFF
                 -DVCPKG_TARGET_TRIPLET=${arch_triplet}
         RESULT_VARIABLE cfg_r
     )
@@ -34,6 +34,17 @@ function(configure_and_build name build_dir arch_triplet arch_flag)
 endfunction()
 
 function(find_soundtouch triplet out_path)
+    # Prefer bundled binaries in externals/soundtouch.
+    set(arch_dir "x64")
+    if(triplet STREQUAL "x86-windows")
+        set(arch_dir "x86")
+    endif()
+    set(ext_candidate "${SOURCE_DIR}/externals/soundtouch/bin/${arch_dir}/SoundTouch.dll")
+    if(EXISTS "${ext_candidate}")
+        set(${out_path} "${ext_candidate}" PARENT_SCOPE)
+        return()
+    endif()
+
     set(root "$ENV{VCPKG_ROOT}")
     if(NOT root)
         set(root "C:/vcpkg")
@@ -51,6 +62,7 @@ function(stage name build_dir dist_dir triplet)
     file(MAKE_DIRECTORY "${dist_dir}")
     set(files
         KrkrSpeedController.exe
+        krkr_injector.exe
         krkr_speed_hook.dll
         SoundTouch.dll
     )
@@ -90,5 +102,21 @@ configure_and_build("x86" "${BUILD_X86}" "x86-windows" "Win32")
 
 stage("x64" "${BUILD_X64}" "${DIST_DIR}/x64" "x64-windows")
 stage("x86" "${BUILD_X86}" "${DIST_DIR}/x86" "x86-windows")
+
+# Clean legacy cmd shortcut and create a Windows .lnk shortcut to x86 controller.
+file(REMOVE "${DIST_DIR}/KrkrSpeedController_x86.cmd")
+execute_process(
+    COMMAND powershell -NoLogo -NoProfile -Command
+        "$ws=New-Object -ComObject WScript.Shell;"
+        "$sc=$ws.CreateShortcut('${DIST_DIR}/KrkrSpeedController_x86.lnk');"
+        "$sc.TargetPath='${DIST_DIR}/x86/KrkrSpeedController.exe';"
+        "$sc.WorkingDirectory='${DIST_DIR}/x86';"
+        "$sc.IconLocation='${DIST_DIR}/x86/KrkrSpeedController.exe,0';"
+        "$sc.Save();"
+    RESULT_VARIABLE shortcut_r
+)
+if(NOT shortcut_r EQUAL 0)
+    message(WARNING "Failed to create KrkrSpeedController_x86.lnk (result ${shortcut_r})")
+endif()
 
 message(STATUS "Dual-arch staging complete: ${DIST_DIR}/x64 and ${DIST_DIR}/x86")

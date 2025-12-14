@@ -1,7 +1,10 @@
 #include "XAudio2Hook.h"
 #include "DirectSoundHook.h"
+#include "FMODHook.h"
+#include "WwiseHook.h"
 #include "HookUtils.h"
 #include "../common/Logging.h"
+#include "../common/SharedSettings.h"
 #include <thread>
 #include <Windows.h>
 #include <cstring>
@@ -90,7 +93,15 @@ namespace {
                 KRKR_LOG_INFO(std::string("Captured DirectSoundCreate from newly loaded module: ") + nameAnsi);
             }
         }
-        // waveOut support removed
+
+        // FMOD
+        if (strstr(nameAnsi, "fmod") || strstr(nameAnsi, "FMOD")) {
+            krkrspeed::FMODHook::instance().initialize();
+        }
+        // Wwise
+        if (strstr(nameAnsi, "AkSoundEngine") || strstr(nameAnsi, "aksoundengine")) {
+             krkrspeed::WwiseHook::instance().initialize();
+        }
     }
 
     FARPROC WINAPI GetProcAddressHook(HMODULE module, LPCSTR procName) {
@@ -116,6 +127,18 @@ namespace {
             auto &ds = krkrspeed::DirectSoundHook::instance();
             ds.setOriginalCreate(reinterpret_cast<void *>(fn));
             return reinterpret_cast<FARPROC>(&krkrspeed::DirectSoundHook::DirectSoundCreateHook);
+        }
+        if (_stricmp(procName, "FMOD_System_PlaySound") == 0) {
+            auto &fh = krkrspeed::FMODHook::instance();
+            fh.setOriginalSystemPlaySound(reinterpret_cast<void*>(fn));
+            // Ensure FMOD functions are loaded so we can create DSPs later
+            fh.initialize();
+            return reinterpret_cast<FARPROC>(krkrspeed::FMODHook::getSystemPlaySoundHook());
+        }
+        if (_stricmp(procName, "FMOD_Channel_SetCallback") == 0) {
+            auto &fh = krkrspeed::FMODHook::instance();
+            fh.setOriginalChannelSetCallback(reinterpret_cast<void*>(fn));
+            return reinterpret_cast<FARPROC>(krkrspeed::FMODHook::getChannelSetCallbackHook());
         }
         return fn;
     }
@@ -180,18 +203,38 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 stage = "prolog";
                 KRKR_LOG_INFO("krkr_speed_hook.dll attached; starting hook initialization");
 
-                // Global safety: skip all patching if KRKR_SAFE_MODE is set.
-                if (EnvFlagOn(L"KRKR_SAFE_MODE")) {
-                    KRKR_LOG_INFO("KRKR_SAFE_MODE set; skipping all hooks and patches");
+                // Read shared settings from controller (if present).
+                krkrspeed::SharedSettings shared{};
+                bool haveShared = false;
+                const auto mapName = krkrspeed::BuildSharedSettingsName(static_cast<std::uint32_t>(GetCurrentProcessId()));
+                HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapName.c_str());
+                if (mapping) {
+                    auto *view = static_cast<krkrspeed::SharedSettings *>(
+                        MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(krkrspeed::SharedSettings)));
+                    if (view) {
+                        shared = *view;
+                        haveShared = true;
+                        UnmapViewOfFile(view);
+                    }
+                    CloseHandle(mapping);
+                }
+
+                if (shared.enableLog) {
+                    krkrspeed::SetLoggingEnabled(true);
+                }
+                if (shared.safeMode) {
+                    KRKR_LOG_INFO("Safe mode set by controller; skipping all hooks and patches");
                     return;
                 }
 
-                // Allow skipping XAudio2/DS via environment for diagnostics.
-                const bool skipXa = EnvFlagOn(L"KRKR_SKIP_XAUDIO2");
-                const bool skipImports = EnvFlagOn(L"KRKR_SKIP_IMPORT_PATCHES");
+                const bool skipXa = haveShared ? (shared.skipXAudio2 != 0) : false;
+                const bool skipDs = haveShared ? (shared.skipDirectSound != 0) : false;
+                const bool skipFmod = haveShared ? (shared.skipFmod != 0) : false;
+                const bool skipWwise = haveShared ? (shared.skipWwise != 0) : false;
+                const bool skipImports = false;
 
                 if (skipImports) {
-                    KRKR_LOG_INFO("KRKR_SKIP_IMPORT_PATCHES set; skipping GetProcAddress/LoadLibrary patching");
+                    KRKR_LOG_INFO("Import patching disabled by config");
                 } else {
                     stage = "patch GetProcAddress";
                     if (krkrspeed::PatchImport("kernel32.dll", "GetProcAddress",
@@ -240,18 +283,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
 
                 stage = "vectored handler";
                 // Lightweight crash breadcrumbs: log first few exceptions with addresses (can be disabled).
-                bool skipVeh = EnvFlagOn(L"KRKR_DISABLE_VEH");
-                if (!skipVeh) {
-                    g_vectored = AddVectoredExceptionHandler(TRUE, VectoredHandler);
-                } else {
-                    KRKR_LOG_INFO("KRKR_DISABLE_VEH set; skipping vectored exception handler");
-                }
+                g_vectored = AddVectoredExceptionHandler(TRUE, VectoredHandler);
 
                 stage = "module dump";
-                wchar_t skipDumpBuf[4] = {};
-                const bool skipDump = GetEnvironmentVariableW(L"KRKR_SKIP_MODULE_DUMP", skipDumpBuf, static_cast<DWORD>(std::size(skipDumpBuf))) > 0;
+                const bool skipDump = false;
                 if (skipDump) {
-                    KRKR_LOG_INFO("KRKR_SKIP_MODULE_DUMP set; skipping module listing");
+                    KRKR_LOG_INFO("Module dump skipped by config");
                 } else {
                     try {
                         // Dump loaded module names for diagnostics.
@@ -277,6 +314,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 }
 
                 stage = "xaudio2 init";
+                if (haveShared) {
+                    krkrspeed::XAudio2Hook::instance().configureLengthGate(shared.lengthGateEnabled != 0,
+                                                                          shared.lengthGateSeconds);
+                }
+                krkrspeed::XAudio2Hook::instance().setSkip(skipXa);
                 if (!skipXa) {
                     KRKR_LOG_INFO("Init: starting XAudio2Hook::initialize");
                     try {
@@ -289,6 +331,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 }
 
                 stage = "directsound init";
+                krkrspeed::DirectSoundHook::Config dsCfg;
+                dsCfg.skip = skipDs;
+                dsCfg.disableBgm = haveShared ? (shared.disableBgm != 0) : false;
+                dsCfg.processAllAudio = haveShared ? (shared.processAllAudio != 0) : false;
+                dsCfg.bgmGateSeconds = haveShared ? shared.bgmSecondsGate : 60.0f;
+                dsCfg.stereoBgmMode = haveShared ? shared.stereoBgmMode : 1u;
+                krkrspeed::DirectSoundHook::instance().configure(dsCfg);
+
                 KRKR_LOG_INFO("Init: starting DirectSoundHook::initialize");
                 try {
                     krkrspeed::DirectSoundHook::instance().initialize();
@@ -296,10 +346,33 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     KRKR_LOG_ERROR("Init: DirectSoundHook::initialize threw an exception");
                 }
 
+                stage = "fmod init";
+                KRKR_LOG_INFO("Init: starting FMODHook::initialize");
+                try {
+                    if (!skipFmod) {
+                        krkrspeed::FMODHook::instance().initialize();
+                    } else {
+                        KRKR_LOG_INFO("KRKR_SKIP_FMOD set; skipping FMOD hooks");
+                    }
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: FMODHook::initialize threw an exception");
+                }
+
+                stage = "wwise init";
+                KRKR_LOG_INFO("Init: starting WwiseHook::initialize");
+                try {
+                    if (!skipWwise) {
+                        krkrspeed::WwiseHook::instance().initialize();
+                    } else {
+                        KRKR_LOG_INFO("KRKR_SKIP_WWISE set; skipping Wwise hooks");
+                    }
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: WwiseHook::initialize threw an exception");
+                }
 
                 stage = "ldr notify";
                 // Optionally skip LdrRegisterDllNotification if requested (troubleshooting).
-                bool skipLdrNotify = EnvFlagOn(L"KRKR_SKIP_LDR_NOTIFY");
+                bool skipLdrNotify = false;
 
                 if (!skipLdrNotify) {
                     KRKR_LOG_INFO("Init: registering LdrRegisterDllNotification");

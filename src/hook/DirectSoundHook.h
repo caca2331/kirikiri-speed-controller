@@ -7,7 +7,9 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <chrono>
 #include "../common/DspPipeline.h"
+#include "../common/AudioStreamProcessor.h"
 #include "../common/VoiceContext.h"
 
 namespace krkrspeed {
@@ -16,6 +18,16 @@ class DirectSoundHook {
 public:
     static DirectSoundHook &instance();
     void initialize();
+    struct Config {
+        bool skip = false;
+        bool disableBgm = false;
+        bool processAllAudio = false;
+        float bgmGateSeconds = 60.0f;
+        std::uint32_t stereoBgmMode = 1; // 0 aggressive,1 hybrid(default),2 none
+    };
+    void configure(const Config &cfg);
+
+    void applySharedSettingsFallback();
 
     // Allow late binding when DirectSoundCreate8 is resolved dynamically.
     void setOriginalCreate8(void *fn);
@@ -36,6 +48,7 @@ public:
                                      DWORD dwAudioBytes2);
     static HRESULT WINAPI UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2);
+    static ULONG __stdcall ReleaseHook(IDirectSoundBuffer *self);
 
     __declspec(noinline) HRESULT handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                               LPVOID pAudioPtr2, DWORD dwAudioBytes2);
@@ -48,11 +61,13 @@ private:
     using PFN_DirectSoundCreate = HRESULT(WINAPI *)(LPCGUID, LPDIRECTSOUND *, LPUNKNOWN);
     using PFN_CreateSoundBuffer = HRESULT(__stdcall *)(IDirectSound8 *, LPDIRECTSOUNDBUFFER *, LPCDSBUFFERDESC);
     using PFN_Unlock = HRESULT(__stdcall *)(IDirectSoundBuffer *, LPVOID, DWORD, LPVOID, DWORD);
+    using PFN_Release = ULONG(__stdcall *)(IDirectSoundBuffer *);
 
     PFN_DirectSoundCreate8 m_origCreate8 = nullptr;
     PFN_DirectSoundCreate m_origCreate = nullptr;
     PFN_CreateSoundBuffer m_origCreateBuffer = nullptr;
     PFN_Unlock m_origUnlock = nullptr;
+    PFN_Release m_origRelease = nullptr;
 
     struct BufferInfo {
         std::uint32_t sampleRate = 0;
@@ -68,9 +83,10 @@ private:
         bool loggedFormat = false;
         std::unique_ptr<DspPipeline> dsp;
         std::uint64_t unlockCount = 0;
-        std::uint64_t lastLogCount = 0;
         std::uint64_t processedFrames = 0;
-        std::uint64_t loopBytesAccum = 0;
+        DWORD currentFrequency = 0;
+        bool freqDirty = false;
+        std::unique_ptr<AudioStreamProcessor> stream;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;
     std::set<std::string> m_loggedFormats;
@@ -83,8 +99,14 @@ private:
     bool m_disableVtablePatch = false; // retained for safety; no env toggle now
     bool m_disableBgm = false;
     bool m_forceApply = false;
-    float m_bgmSecondsGate = 15.0f;
-    bool m_loopDetect = true;
+    float m_bgmSecondsGate = 60.0f;
+    Config m_config{};
+    std::atomic<bool> m_seenMono{false};
+    std::atomic<bool> m_seenStereo{false};
+    std::atomic<bool> m_fragmented{true};
+    std::atomic<bool> m_loggedFragmentedClear{false};
+    std::atomic<bool> m_loggedMonoStereo{false};
+    std::unordered_map<std::uintptr_t, std::chrono::steady_clock::time_point> m_bgmReleaseTimes;
 };
 
 } // namespace krkrspeed

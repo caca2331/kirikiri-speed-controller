@@ -1,7 +1,6 @@
 #include "XAudio2Hook.h"
 #include "HookUtils.h"
 #include "../common/Logging.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <map>
@@ -27,15 +26,11 @@ XAudio2Hook &XAudio2Hook::instance() {
 
 void XAudio2Hook::initialize() {
     g_self = this;
-    // Default gate: always on, 60s or overridden by env KRKR_DS_BGM_SECS for consistency.
-    auto envFloat = [](const wchar_t *name, float fallback) {
-        wchar_t buf[32] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return fallback;
-        try { return std::stof(std::wstring(buf)); } catch (...) { return fallback; }
-    };
     m_lengthGateEnabled = true;
-    m_lengthGateSeconds = envFloat(L"KRKR_DS_BGM_SECS", 60.0f);
+    if (m_skip) {
+        KRKR_LOG_INFO("XAudio2 hook skipped by config");
+        return;
+    }
     detectVersion();
     hookEntryPoints();
     ensureCreateFunction();
@@ -98,11 +93,13 @@ void XAudio2Hook::hookEntryPoints() {
     if (patched) {
         KRKR_LOG_INFO("Patched XAudio2Create import for version " + m_version);
     } else {
-        KRKR_LOG_WARN("Failed to patch XAudio2Create import; will fall back to GetProcAddress interception");
+        if (!m_warnedNoExportOnce.exchange(true)) {
+            KRKR_LOG_WARN("Failed to patch XAudio2Create import; will fall back to GetProcAddress interception");
+        }
     }
 }
 
-void XAudio2Hook::ensureCreateFunction() {
+void XAudio2Hook::ensureCreateFunction(bool logOnFail) {
     if (m_origCreate) {
         return;
     }
@@ -112,17 +109,13 @@ void XAudio2Hook::ensureCreateFunction() {
     HMODULE xa6 = GetModuleHandleA("XAudio2_6.dll");
     HMODULE xa5 = GetModuleHandleA("XAudio2_5.dll");
     HMODULE chosen = xa9 ? xa9 : (xa8 ? xa8 : (xa7 ? xa7 : (xa6 ? xa6 : xa5)));
+    if (!chosen) chosen = LoadLibraryA("XAudio2_7.dll");
+    if (!chosen) chosen = LoadLibraryA("XAudio2_6.dll");
+    if (!chosen) chosen = LoadLibraryA("XAudio2_5.dll");
     if (!chosen) {
-        chosen = LoadLibraryA("XAudio2_7.dll");
-    }
-    if (!chosen) {
-        chosen = LoadLibraryA("XAudio2_6.dll");
-    }
-    if (!chosen) {
-        chosen = LoadLibraryA("XAudio2_5.dll");
-    }
-    if (!chosen) {
-        KRKR_LOG_WARN("Could not load any XAudio2 DLL for manual lookup");
+        if (logOnFail && !m_warnedNoExportOnce.exchange(true)) {
+            KRKR_LOG_WARN("Could not load any XAudio2 DLL for manual lookup");
+        }
         return;
     }
     auto fn = reinterpret_cast<PFN_XAudio2Create>(GetProcAddress(chosen, "XAudio2Create"));
@@ -133,7 +126,9 @@ void XAudio2Hook::ensureCreateFunction() {
         else m_version = "2.7";
         KRKR_LOG_INFO("Captured XAudio2Create via manual lookup for version " + m_version);
     } else {
-        KRKR_LOG_WARN("XAudio2Create export not found in loaded DLL; will rely on COM bootstrap");
+        if (!m_warnedNoExportOnce.exchange(true)) {
+            KRKR_LOG_WARN("XAudio2Create export not found in loaded DLL; will rely on COM bootstrap");
+        }
     }
 }
 
@@ -173,7 +168,9 @@ void XAudio2Hook::bootstrapVtable() {
         hr = CoCreateInstance(kClsidXAudio2_27, nullptr, CLSCTX_INPROC_SERVER, __uuidof(IXAudio2),
                               reinterpret_cast<void **>(&xa));
         if (FAILED(hr) || !xa) {
-            KRKR_LOG_WARN("Bootstrap could not create IXAudio2 instance (hr=" + std::to_string(hr) + ")");
+            if (!m_warnedBootstrapOnce.exchange(true)) {
+                KRKR_LOG_WARN("Bootstrap could not create IXAudio2 instance (hr=" + std::to_string(hr) + ")");
+            }
             return;
         }
         m_version = "2.7";
@@ -202,6 +199,7 @@ void XAudio2Hook::bootstrapVtable() {
 
 void XAudio2Hook::scheduleBootstrapRetries() {
     std::thread([] {
+        bool loggedOnce = false;
         for (int i = 0; i < 20; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             auto &self = XAudio2Hook::instance();
@@ -211,8 +209,13 @@ void XAudio2Hook::scheduleBootstrapRetries() {
                     return;
                 }
             }
-            self.ensureCreateFunction();
+            self.ensureCreateFunction(false);
             self.bootstrapVtable();
+            if (!loggedOnce && !self.m_origSubmit) {
+                loggedOnce = true;
+                // only log first retry failure; final message printed after loop
+                KRKR_LOG_DEBUG("Bootstrap retry failed to obtain IXAudio2 vtable; will keep trying");
+            }
         }
         KRKR_LOG_WARN("Bootstrap retries exhausted without obtaining XAudio2 vtable; audio may remain unhooked");
     }).detach();
@@ -306,16 +309,16 @@ HRESULT WINAPI XAudio2Hook::CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnk
     }
     const bool isXAudioClsid = IsEqualCLSID(rclsid, kClsidXAudio2_27) || IsEqualCLSID(rclsid, kClsidXAudio2Debug_27);
     const HRESULT hr = g_self->m_origCoCreate(rclsid, pUnkOuter, dwClsContext, riid, ppv);
-    if (FAILED(hr) || !ppv || !*ppv || !isXAudioClsid) {
-        return hr;
-    }
-
-    g_self->m_version = "2.7";
-    auto *xa2 = reinterpret_cast<IXAudio2 *>(*ppv);
-    void **vtbl = *reinterpret_cast<void ***>(xa2);
-    if (!g_self->m_origCreateSourceVoice) {
-        PatchVtableEntry(vtbl, 8, &XAudio2Hook::CreateSourceVoiceHook, g_self->m_origCreateSourceVoice);
-        KRKR_LOG_INFO("IXAudio2 vtable patched via CoCreateInstance (CreateSourceVoice)");
+    if (SUCCEEDED(hr) && ppv && *ppv) {
+        if (isXAudioClsid) {
+            g_self->m_version = "2.7";
+            auto *xa2 = reinterpret_cast<IXAudio2 *>(*ppv);
+            void **vtbl = *reinterpret_cast<void ***>(xa2);
+            if (!g_self->m_origCreateSourceVoice) {
+                PatchVtableEntry(vtbl, 8, &XAudio2Hook::CreateSourceVoiceHook, g_self->m_origCreateSourceVoice);
+                KRKR_LOG_INFO("IXAudio2 vtable patched via CoCreateInstance (CreateSourceVoice)");
+            }
+        }
     }
     return hr;
 }
@@ -374,6 +377,7 @@ void __stdcall XAudio2Hook::DestroyVoiceHook(IXAudio2Voice *voice) {
     {
         std::lock_guard<std::mutex> lock(hook.m_mutex);
         hook.m_contexts.erase(reinterpret_cast<std::uintptr_t>(voice));
+        hook.m_pipelines.erase(reinterpret_cast<std::uintptr_t>(voice));
     }
     if (hook.m_origDestroyVoice) {
         hook.m_origDestroyVoice(voice);
@@ -400,10 +404,7 @@ HRESULT __stdcall XAudio2Hook::SubmitSourceBufferHook(IXAudio2SourceVoice *voice
     if (!hook.m_origSubmit || !pBuffer || !pBuffer->pAudioData || pBuffer->AudioBytes == 0) {
         return XAUDIO2_E_INVALID_CALL;
     }
-    static bool disableDsp = []{
-        wchar_t buf[4] = {};
-        return GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf))) > 0;
-    }();
+    static bool disableDsp = false;
     hook.pollSharedSettings();
 
     std::vector<std::uint8_t> processed;
@@ -482,13 +483,12 @@ std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, c
     }
 
     static DspConfig defaultConfig{};
-    static std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> pipelines;
-    auto pipeline = pipelines.find(voiceKey);
-    if (pipeline == pipelines.end()) {
+    auto pipeline = m_pipelines.find(voiceKey);
+    if (pipeline == m_pipelines.end()) {
         const std::uint32_t sr = it->second.sampleRate > 0 ? it->second.sampleRate : 44100;
         const std::uint32_t ch = it->second.channels > 0 ? it->second.channels : 1;
         auto dsp = std::make_unique<DspPipeline>(sr, ch, defaultConfig);
-        pipeline = pipelines.emplace(voiceKey, std::move(dsp)).first;
+        pipeline = m_pipelines.emplace(voiceKey, std::move(dsp)).first;
         KRKR_LOG_DEBUG("Initialized DSP pipeline for voice key=" + std::to_string(voiceKey));
     }
     return pipeline->second->process(data, size, ratio);

@@ -2,6 +2,7 @@
 #include "HookUtils.h"
 #include "XAudio2Hook.h"
 #include "../common/Logging.h"
+#include "../common/AudioStreamProcessor.h"
 
 #include <initguid.h>
 #include <algorithm>
@@ -9,6 +10,8 @@
 #include <cstring>
 #include <cstdint>
 #include <memory>
+#include <cmath>
+#include <thread>
 #include <Psapi.h>
 
 namespace krkrspeed {
@@ -18,38 +21,70 @@ DirectSoundHook &DirectSoundHook::instance() {
     return hook;
 }
 
-void DirectSoundHook::initialize() {
-    static auto envFlagOn = [](const wchar_t *name) {
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return false;
-        return wcscmp(buf, L"1") == 0;
-    };
-    static auto envFloat = [](const wchar_t *name, float fallback) {
-        wchar_t buf[32] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return fallback;
-        try {
-            return std::stof(std::wstring(buf));
-        } catch (...) {
-            return fallback;
-        }
-    };
-    auto envFlagOff = [&](const wchar_t *name) {
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return false;
-        return wcscmp(buf, L"1") == 0;
-    };
-    // Default ON; allow opt-out with KRKR_SKIP_DS=1 for troubleshooting.
-    if (envFlagOn(L"KRKR_SKIP_DS")) {
-        KRKR_LOG_INFO("KRKR_SKIP_DS set; DirectSound hooks disabled");
+void DirectSoundHook::configure(const Config &cfg) {
+    m_config = cfg;
+}
+
+void DirectSoundHook::applySharedSettingsFallback() {
+    const auto name = BuildSharedSettingsName(static_cast<std::uint32_t>(GetCurrentProcessId()));
+    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+    if (!mapping) {
         return;
     }
-    m_bgmSecondsGate = envFloat(L"KRKR_DS_BGM_SECS", 60.0f);
-    m_disableBgm = envFlagOn(L"KRKR_DS_DISABLE_BGM");
-    m_forceApply = envFlagOn(L"KRKR_DS_FORCE");
+    auto *view = static_cast<SharedSettings *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedSettings)));
+    if (!view) {
+        CloseHandle(mapping);
+        return;
+    }
+    const bool newForce = view->processAllAudio != 0;
+    const bool newDisable = view->disableBgm != 0;
+    const float newGate = view->bgmSecondsGate;
+    const std::uint32_t newStereoMode = view->stereoBgmMode;
+    const bool changed = newForce != m_forceApply || newDisable != m_disableBgm ||
+                         std::abs(newGate - m_bgmSecondsGate) > 1e-4f ||
+                         newStereoMode != m_config.stereoBgmMode;
+    m_forceApply = newForce;
+    m_disableBgm = newDisable;
+    m_bgmSecondsGate = newGate;
+    m_config.processAllAudio = m_forceApply;
+    m_config.disableBgm = m_disableBgm;
+    m_config.bgmGateSeconds = m_bgmSecondsGate;
+    m_config.stereoBgmMode = newStereoMode;
+    if (m_config.stereoBgmMode != 1) {
+        m_seenMono.store(true); // aggressive/none treat mono as already seen
+    }
+    if (changed) {
+        KRKR_LOG_INFO(std::string("DS shared settings: processAllAudio=") + (m_forceApply ? "1" : "0") +
+                      " disableBgm=" + (m_disableBgm ? "1" : "0") +
+                      " gate=" + std::to_string(m_bgmSecondsGate) +
+                      " stereoMode=" + std::to_string(m_config.stereoBgmMode));
+    }
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+}
+
+void DirectSoundHook::initialize() {
+    // Default ON; allow opt-out via config.
+    if (m_config.skip) {
+        KRKR_LOG_INFO("DirectSound hooks disabled by config");
+        return;
+    }
+    m_bgmSecondsGate = m_config.bgmGateSeconds;
+    m_disableBgm = m_config.disableBgm;
+    m_forceApply = m_config.processAllAudio;
+    m_fragmented.store(true);
+    m_loggedFragmentedClear.store(false);
+    m_loggedMonoStereo.store(false);
+    m_bgmReleaseTimes.clear();
+    m_seenStereo.store(false);
+    // hybrid starts permissive until mono observed.
+    if (m_config.stereoBgmMode == 1) {
+        m_seenMono.store(false);
+    } else {
+        m_seenMono.store(true); // aggressive/none treat as seen to keep logic simple
+    }
     KRKR_LOG_INFO("DirectSound hook initialization started");
+    applySharedSettingsFallback();
     hookEntryPoints();
     scanLoadedModules();
     bootstrapVtable();
@@ -232,8 +267,20 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
     info.isLikelyBgm = likelyBgm;
     info.isPcm16 = isPcm16;
     DspConfig cfg{};
-    info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
-    hook.m_buffers[reinterpret_cast<std::uintptr_t>(*ppDSBuffer)] = std::move(info);
+    info.stream = std::make_unique<AudioStreamProcessor>(info.sampleRate, info.channels, info.blockAlign, cfg);
+    auto key = reinterpret_cast<std::uintptr_t>(*ppDSBuffer);
+    // If this buffer pointer was recently a BGM buffer and reused quickly, mark again.
+    auto now = std::chrono::steady_clock::now();
+    auto reuse = hook.m_bgmReleaseTimes.find(key);
+    if (reuse != hook.m_bgmReleaseTimes.end()) {
+        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - reuse->second).count();
+        if (diff <= 5000) {
+            info.isLikelyBgm = true;
+            KRKR_LOG_INFO("DS: buffer reused soon after BGM release; marking BGM buf=" + std::to_string(key));
+        }
+        hook.m_bgmReleaseTimes.erase(reuse);
+    }
+    hook.m_buffers[key] = std::move(info);
 
     return hr;
 }
@@ -264,23 +311,85 @@ HRESULT WINAPI DirectSoundHook::UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pA
     return UnlockHook(reinterpret_cast<IDirectSoundBuffer *>(self), pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
 }
 
+ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
+    auto &hook = DirectSoundHook::instance();
+    if (!hook.m_origRelease) {
+        return 0;
+    }
+    const auto key = reinterpret_cast<std::uintptr_t>(self);
+    bool wasBgm = false;
+    {
+        std::lock_guard<std::mutex> lock(hook.m_mutex);
+        auto it = hook.m_buffers.find(key);
+        if (it != hook.m_buffers.end()) {
+            wasBgm = it->second.isLikelyBgm;
+        }
+    }
+    ULONG remaining = hook.m_origRelease(self);
+    if (remaining == 0) {
+        auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(hook.m_mutex);
+            if (wasBgm) {
+                hook.m_bgmReleaseTimes[key] = now;
+            } else {
+                hook.m_bgmReleaseTimes.erase(key);
+            }
+            hook.m_buffers.erase(key);
+        }
+        {
+            std::lock_guard<std::mutex> lock(hook.m_vtableMutex);
+            hook.m_bufferVtables.erase(self);
+        }
+        if (wasBgm) {
+            std::thread([key, &hook]() {
+                for (int i = 0; i < 100; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    std::lock_guard<std::mutex> lock(hook.m_mutex);
+                    auto reuse = hook.m_buffers.find(key);
+                    if (reuse != hook.m_buffers.end()) {
+                        reuse->second.isLikelyBgm = true;
+                        hook.m_bgmReleaseTimes.erase(key);
+                        KRKR_LOG_INFO("DS: buffer reused soon after BGM release; re-marked as BGM buf=" +
+                                      std::to_string(key));
+                        return;
+                    }
+                    auto ts = hook.m_bgmReleaseTimes.find(key);
+                    if (ts == hook.m_bgmReleaseTimes.end()) {
+                        return;
+                    }
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - ts->second).count();
+                    if (elapsed > 5000) {
+                        hook.m_bgmReleaseTimes.erase(ts);
+                        return;
+                    }
+                }
+                std::lock_guard<std::mutex> lock2(hook.m_mutex);
+                hook.m_bgmReleaseTimes.erase(key);
+            }).detach();
+        }
+        KRKR_LOG_DEBUG("DS buffer released and metadata cleared buf=" +
+                       std::to_string(key));
+    }
+    return remaining;
+}
+
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    static bool disableDsp = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
-    static bool useWsola = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_WSOLA", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
+    static bool disableDsp = false;
     if (!m_loggedUnlockOnce.exchange(true)) {
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
     }
     XAudio2Hook::instance().pollSharedSettings();
+    static std::chrono::steady_clock::time_point lastSharedPoll{};
+    const auto pollNow = std::chrono::steady_clock::now();
+    if (lastSharedPoll.time_since_epoch().count() == 0 ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(pollNow - lastSharedPoll).count() > 1000) {
+        lastSharedPoll = pollNow;
+        applySharedSettingsFallback();
+    }
 
     // Validate pointers; fall back to passthrough if unsafe.
     auto ptrInvalid = [](LPVOID ptr, DWORD bytes) {
@@ -308,10 +417,14 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
     }
 
+    BufferInfo *processedInfo = nullptr;
+    float processedDurationSec = 0.0f;
+    float lastAppliedSpeedForPlay = 1.0f;
+
     for (int attempt = 0; attempt < 2; ++attempt) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
-        if (it != m_buffers.end() && it->second.dsp) {
+        if (it != m_buffers.end() && it->second.stream) {
             if (!it->second.isPcm16) {
                 if (!it->second.loggedFormat) {
                     KRKR_LOG_WARN("DirectSound buffer format not PCM16; skipping DSP. fmt=" +
@@ -328,6 +441,15 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
             const float gateSeconds = XAudio2Hook::instance().lengthGateSeconds();
             auto &info = it->second;
             info.unlockCount++;
+            if (info.channels == 1) {
+                m_seenMono.store(true);
+            } else if (info.channels > 1) {
+                m_seenStereo.store(true);
+            }
+            if (!m_loggedMonoStereo.load() && m_seenMono.load() && m_seenStereo.load()) {
+                KRKR_LOG_INFO("DS: detected both mono and stereo buffers");
+                m_loggedMonoStereo.store(true);
+            }
 
             const std::size_t frames = (combined.size() / sizeof(std::int16_t)) /
                                        std::max<std::uint32_t>(1, info.channels);
@@ -335,64 +457,58 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 static_cast<float>(frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
             const float totalSec =
                 static_cast<float>(info.processedFrames + frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
-            // skip only the very first tiny chunk (<0.5s) of a new buffer; once total >0.5s, process normally
-            const bool tooShort = (durationSec < 0.5f) && (totalSec < 0.5f);
+            processedInfo = &info;
+            processedDurationSec = durationSec;
             const bool shouldLog = info.unlockCount <= 5 || (info.unlockCount % 50 == 0);
-            // Loop-based BGM detection: only for large/looping buffers, skip small voice buffers.
-            const float loopDetectThreshold = std::max<float>(2.0f, m_bgmSecondsGate * 0.25f);
-            const bool musicCandidate = (info.channels > 1) || (info.approxSeconds >= 1.5f);
-            // Fast-path: short stereo loops are very likely BGM; mark after a couple unlocks.
-            if (!m_disableBgm && info.channels > 1 && info.approxSeconds <= 0.30f && info.unlockCount >= 2 &&
-                !info.isLikelyBgm) {
+            // Reset stream if idle gap exceeded.
+            const auto now = std::chrono::steady_clock::now();
+            if (info.stream) {
+                info.stream->resetIfIdle(now, std::chrono::milliseconds(200), shouldLog,
+                                         reinterpret_cast<std::uintptr_t>(self));
+            }
+            if (durationSec > 1.0f && m_fragmented.load()) {
+                m_fragmented.store(false);
+                if (!m_loggedFragmentedClear.exchange(true)) {
+                    KRKR_LOG_INFO("DS: detected non-fragmented audio (>1s chunk); disabling tiny-chunk skip");
+                }
+            }
+            const bool tooShort = false; // short-guard disabled per request
+            const bool stereoIsBgm = (m_config.stereoBgmMode == 0) ||
+                                     (m_config.stereoBgmMode == 1 && m_seenMono.load());
+            const bool passLengthGate = totalSec > m_bgmSecondsGate;
+            if (!info.isLikelyBgm && !m_disableBgm && passLengthGate) {
                 info.isLikelyBgm = true;
                 if (shouldLog) {
-                    KRKR_LOG_INFO("DS buffer marked BGM via stereo-short heuristic buf=" +
+                    KRKR_LOG_INFO("DS buffer marked BGM via length gate buf=" +
                                   std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
-                                  " dur=" + std::to_string(info.approxSeconds) +
-                                  " unlocks=" + std::to_string(info.unlockCount));
+                                  " totalSec=" + std::to_string(totalSec));
                 }
             }
-            if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm && info.bufferBytes > 0 &&
-                info.approxSeconds >= loopDetectThreshold && musicCandidate) {
-                info.loopBytesAccum += combined.size();
-                const bool oneLoop = info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes);
-                const bool twoLoops = info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes) * 2ULL;
-                if ((oneLoop && info.unlockCount >= 4) || (twoLoops && totalSec >= 2.0f)) {
-                    info.isLikelyBgm = true;
-                    if (shouldLog) {
-                        KRKR_LOG_INFO("DS buffer marked BGM via loop detect early buf=" +
-                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
-                                      " totalSec=" + std::to_string(totalSec) +
-                                      " loopsBytes=" + std::to_string(info.loopBytesAccum) + "/" +
-                                      std::to_string(info.bufferBytes));
-                    }
-                } else if (totalSec >= m_bgmSecondsGate && twoLoops && info.unlockCount >= 12) {
-                    info.isLikelyBgm = true;
-                    if (shouldLog) {
-                        KRKR_LOG_INFO("DS buffer marked BGM via loop detection buf=" +
-                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
-                                      " totalSec=" + std::to_string(totalSec) +
-                                      " loopsBytes=" + std::to_string(info.loopBytesAccum) + "/" +
-                                      std::to_string(info.bufferBytes * 2ULL));
-                    }
+            const bool isBgm = ((((info.channels > 1) && stereoIsBgm) || info.isLikelyBgm) && !m_disableBgm);
+            const bool treatAsBgm = isBgm;
+
+            if (treatAsBgm && !m_forceApply && info.freqDirty && info.baseFrequency > 0) {
+                if (FAILED(self->SetFrequency(info.baseFrequency))) {
+                    KRKR_LOG_WARN("DS: failed to restore base frequency on BGM buf=" +
+                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                } else if (shouldLog) {
+                    KRKR_LOG_INFO("DS: restored base frequency after BGM marking buf=" +
+                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)));
                 }
-            } else if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm && musicCandidate) {
-                // Streaming/rolling small buffers: early mark if they churn rapidly.
-                if ((info.unlockCount >= 8 && totalSec >= 3.0f && info.approxSeconds <= 1.5f) ||
-                    (totalSec >= 4.0f && info.unlockCount >= 12) ||
-                    (totalSec >= m_bgmSecondsGate && info.unlockCount >= 20)) {
-                    info.isLikelyBgm = true;
-                    if (shouldLog) {
-                        KRKR_LOG_INFO("DS buffer marked BGM via duration buf=" +
-                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
-                                      " totalSec=" + std::to_string(totalSec) +
-                                      " unlocks=" + std::to_string(info.unlockCount));
-                    }
+                info.freqDirty = false;
+                info.currentFrequency = info.baseFrequency;
+            }
+            bool doDsp = false;
+            float appliedSpeed = 1.0f;
+            if (!disableDsp) {
+                if (!treatAsBgm) {
+                    doDsp = (!gate || totalSec <= gateSeconds);
+                    appliedSpeed = userSpeed;
+                } else if (m_forceApply) {
+                    doDsp = true; 
+                    appliedSpeed = userSpeed;
                 }
             }
-            // Treat all stereo buffers as BGM candidates by default; only process if forced.
-            const bool isBgm = ((info.channels > 1) || info.isLikelyBgm) && !m_disableBgm;
-            const bool doDsp = !disableDsp && !tooShort && (!isBgm || m_forceApply) && (!gate || totalSec <= gateSeconds);
             if (shouldLog) {
                 KRKR_LOG_DEBUG("DS Unlock: buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
                                " bytes=" + std::to_string(combined.size()) +
@@ -401,79 +517,37 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                " dur=" + std::to_string(durationSec) +
                                " total=" + std::to_string(totalSec) +
                                " bgm=" + (isBgm ? "1" : "0") +
-                               " short=" + (tooShort ? "1" : "0") +
                                " apply=" + (doDsp ? "1" : "0") +
                                " speed=" + std::to_string(userSpeed));
             }
-            auto padSilence = [](std::vector<std::uint8_t> &out, std::size_t targetBytes) {
-                if (out.size() >= targetBytes) return;
-                std::size_t old = out.size();
-                out.resize(targetBytes);
-                std::fill(out.begin() + old, out.end(), 0);
-            };
-
             if (doDsp) {
-                auto processTempo = [&]() {
-                    auto out = info.dsp->process(combined.data(), combined.size(), userSpeed, DspMode::Tempo);
-                    if (out.empty()) {
-                        if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS DSP (WSOLA) produced 0 bytes; passthrough for buf=" +
-                                           std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                        }
-                        return;
-                    }
-                    padSilence(out, combined.size());
-                    if (out.size() >= combined.size()) {
-                        std::copy_n(out.data(), combined.size(), combined.begin());
-                    } else {
-                        std::copy(out.begin(), out.end(), combined.begin());
-                        std::fill(combined.begin() + out.size(), combined.end(), 0);
+                // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
+                const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
+                const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
+                double clampedD = scaled;
+                if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
+                if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
+                const DWORD clamped = static_cast<DWORD>(clampedD);
+                if (clamped != info.currentFrequency) {
+                    self->SetFrequency(clamped);
+                    info.freqDirty = true;
+                    info.currentFrequency = clamped;
+                }
+                appliedSpeed = base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
+                if (info.stream) {
+                    auto res = info.stream->process(combined.data(), combined.size(), appliedSpeed, shouldLog,
+                                                    reinterpret_cast<std::uintptr_t>(self));
+                    if (!res.output.empty()) {
+                        combined.swap(res.output);
                     }
                     if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS WSOLA applied: in=" + std::to_string(combined.size()) +
-                                       " out=" + std::to_string(out.size()) +
-                                       " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                    }
-                };
-
-                if (useWsola) {
-                    processTempo();
-                } else {
-                    // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
-                    const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
-                    const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
-                    double clampedD = scaled;
-                    if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
-                    if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
-                    const DWORD clamped = static_cast<DWORD>(clampedD);
-                    self->SetFrequency(clamped);
-                    const float appliedSpeed =
-                        base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
-                    float denom = appliedSpeed;
-                    if (denom < 0.01f) denom = 0.01f;
-                    const float pitchDown = 1.0f / denom;
-                    auto out = info.dsp->process(combined.data(), combined.size(), pitchDown, DspMode::Pitch);
-                    if (out.empty()) {
-                        if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS pitch-compensate produced 0 bytes; fallback passthrough buf=" +
-                                           std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                        }
-                    } else {
-                    padSilence(out, combined.size());
-                    if (out.size() >= combined.size()) {
-                        std::copy_n(out.data(), combined.size(), combined.begin());
-                    } else {
-                        std::copy(out.begin(), out.end(), combined.begin());
-                        std::fill(combined.begin() + out.size(), combined.end(), 0);
-                        }
-                        if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
-                                           " target=" + std::to_string(clamped) +
-                                           " appliedSpeed=" + std::to_string(appliedSpeed) +
-                                           " pitchCompOut=" + std::to_string(out.size()));
-                        }
+                        KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
+                                       " target=" + std::to_string(clamped) +
+                                       " appliedSpeed=" + std::to_string(appliedSpeed) +
+                                       " cbuf=" + std::to_string(res.cbufferSize));
                     }
                 }
+                lastAppliedSpeedForPlay = appliedSpeed;
             }
             info.processedFrames += frames;
             break; // processed successfully
@@ -505,13 +579,22 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                                     static_cast<float>(info.blockAlign * fx->nSamplesPerSec);
                         info.isLikelyBgm = approxSeconds >= m_bgmSecondsGate;
                     }
-                    // Start loop accumulation at current chunk so first detection works even if unlock happened before hook.
-                    info.loopBytesAccum = combined.size();
                     info.isPcm16 = (fx->wFormatTag == WAVE_FORMAT_PCM && fx->wBitsPerSample == 16);
                     info.loggedFormat = false;
                     DspConfig cfg{};
-                    info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
-                    m_buffers[reinterpret_cast<std::uintptr_t>(self)] = std::move(info);
+                    info.stream = std::make_unique<AudioStreamProcessor>(info.sampleRate, info.channels, info.blockAlign, cfg);
+                    auto key = reinterpret_cast<std::uintptr_t>(self);
+                    auto now = std::chrono::steady_clock::now();
+                    auto reuse = m_bgmReleaseTimes.find(key);
+                    if (reuse != m_bgmReleaseTimes.end()) {
+                        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - reuse->second).count();
+                        if (diff <= 5000) {
+                            info.isLikelyBgm = true;
+                            KRKR_LOG_INFO("DS: buffer reused soon after BGM release; marking BGM buf=" + std::to_string(key));
+                        }
+                        m_bgmReleaseTimes.erase(reuse);
+                    }
+                    m_buffers[key] = std::move(info);
                     KRKR_LOG_INFO("DS Unlock: tracked buffer=" +
                                   std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
                                   " fmt=" + std::to_string(fx->wFormatTag) +
@@ -529,7 +612,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
             auto it2 = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
-            if (it2 == m_buffers.end() || !it2->second.dsp) {
+            if (it2 == m_buffers.end() || !it2->second.stream) {
                 KRKR_LOG_WARN("DS Unlock: tracking failed; passthrough");
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
@@ -546,6 +629,10 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         }
     }
 
+    if (!processedInfo) {
+        return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+    }
+
     // Write combined buffer back into the two regions.
     std::size_t cursor = 0;
     if (pAudioPtr1 && dwAudioBytes1) {
@@ -554,6 +641,13 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     }
     if (pAudioPtr2 && dwAudioBytes2) {
         std::memcpy(pAudioPtr2, combined.data() + cursor, dwAudioBytes2);
+    }
+
+    // Track expected playback end time for stream reset heuristic.
+    const float applied = lastAppliedSpeedForPlay > 0.01f ? lastAppliedSpeedForPlay : 1.0f;
+    const float playTime = processedDurationSec / applied;
+    if (processedInfo->stream) {
+        processedInfo->stream->recordPlaybackEnd(processedDurationSec, applied);
     }
 
     return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
@@ -606,11 +700,15 @@ void DirectSoundHook::patchBufferVtable(IDirectSoundBuffer *buf) {
     constexpr size_t kCount = 32;
     std::vector<void *> shadow(kCount);
     for (size_t i = 0; i < kCount; ++i) shadow[i] = origVtbl[i];
+    if (!m_origRelease) {
+        m_origRelease = reinterpret_cast<PFN_Release>(origVtbl[2]);
+    }
     shadow[19] = reinterpret_cast<void *>(&DirectSoundHook::UnlockHook);
+    shadow[2] = reinterpret_cast<void *>(&DirectSoundHook::ReleaseHook);
 
     *reinterpret_cast<void ***>(buf) = shadow.data();
     m_bufferVtables[buf] = std::move(shadow);
-    KRKR_LOG_INFO("Applied shadow vtable for IDirectSoundBuffer instance (Unlock)");
+    KRKR_LOG_INFO("Applied shadow vtable for IDirectSoundBuffer instance (Release, Unlock)");
 }
 
 void DirectSoundHook::installGlobalUnlockHook() {
