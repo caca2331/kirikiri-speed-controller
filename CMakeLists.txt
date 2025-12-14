@@ -43,7 +43,6 @@ endif()
 add_library(krkr_common STATIC
     src/common/DspPipeline.cpp
     src/common/Logging.cpp
-    src/common/EnvOverrides.cpp
     src/common/AudioStreamProcessor.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
@@ -112,8 +111,9 @@ if(WIN32)
 
     if(BUILD_GUI)
         add_executable(KrkrSpeedController WIN32
-            src/gui/main.cpp
-            src/gui/ui.cpp
+            src/core/main.cpp
+            src/core/ui.cpp
+            src/core/ControllerCore.cpp
         )
         target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32 uuid)
         copy_soundtouch_runtime(KrkrSpeedController)

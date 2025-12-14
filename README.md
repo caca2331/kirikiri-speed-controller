@@ -1,44 +1,49 @@
-# Universal Kirikiri Voice Speed Controller
-[中文 | Chinese](README_zh-CN.md)
+# 通用 Kirikiri 语音变速控制器
+[English](README_en.md)
 
-This repository contains an early scaffold for a Kirikiri voice speed controller. The Windows-specific hook targets are not built on non-Windows hosts.
+本仓库提供了一个适用于windows的，控制基于 Kirikiri 游戏的语音速度的控制器。
 
-## Building
-Use CMake to generate a Visual Studio solution. SoundTouch binaries/headers are bundled under `externals/soundtouch` and are always enabled; vcpkg is only a fallback if the bundle is missing.
+## 构建
+使用 CMake 生成 Visual Studio 解决方案。`externals/soundtouch` 已包含 SoundTouch 头文件与二进制并默认启用；只有当该目录缺失时才回退到 vcpkg。
 
-### Windows (dual-arch, staged dist folders)
+### Windows（双架构并打包到 dist）
 ```powershell
 cmake -B build -S . -A x64 -DBUILD_GUI=ON
 cmake --build build --config Release --target dist_dual_arch
 ```
-`dist_dual_arch` configures/builds `build.x64` and `build.x86`, then stages:
+`dist_dual_arch` 会配置/编译 `build.x64` 与 `build.x86`，并将文件放入：
 ```
 dist/
   x64/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
   x86/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
-  KrkrSpeedController_x86.lnk  (Windows shortcut to launch the x86 controller)
+  KrkrSpeedController_x86.lnk (一键启动 x86 控制器的 Windows 快捷方式)
 ```
-Either controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the sibling dist folder.
+任意位数的控制器都可以注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL。
 
-### Controller CLI options (no env vars)
-Flags are sent to the injected hook via shared settings:
-- `--log` / `--enable-log`
-- `--log-dir <path>`
-- `--skip-ds`, `--skip-xaudio2`, `--safe-mode`, `--disable-veh`
-- `--bgm-secs <seconds>` (length/BGM gate)
-- `--force-all` (process all audio), `--disable-bgm` (never treat as BGM)
+## 使用
+- 点按`Refresh`，从下拉菜单中找到游戏，输入想要调整到的速度，点按`Hook + Apply`
+- 如杀毒软件误报须添加信任或暂时关闭杀毒软件
+- 如要注入的游戏受到保护，则须以管理权限运行本工具
+- 如果变速异常，或你希望 BGM 也变速，请勾选`Process BGM`后点击`Hook + Apply`
+- 进阶用法请参照控制器命令行参数部分
+- 如有未适配的游戏请提交Issue或联系作者
 
-## Usage
-- Most Kirikiri games are 32-bit; use the x86 controller for those.
-- If AV blocks the binaries, add an exception or temporarily disable it.
-- If the target is protected/elevated, run the controller as Administrator.
-- Default hooks: DirectSound + XAudio2 + FMOD enabled; logging is off unless `--log` is passed.
-- Supported engines: Kirikiri (DirectSound/XAudio2), FMOD (Unity/Native), Wwise (Experimental).
-- BGM detection: stereo/looping buffers are treated as BGM unless you pass `--force-all`.
+### 控制器命令行参数
+- `--log` / `--enable-log`：开启控制器和 Hook 日志。
+- `--log-dir <路径>`：指定日志输出目录（默认与控制器同目录）。
+- `--mark-stereo-bgm <aggressive|hybrid|none>`：立体声→BGM 判定策略，默认 `hybrid`。在多数游戏中，语音是单通道的，而BGM是立体声的。主要的BGM标记手段。
+- `--bgm-secs <秒>`：BGM 时长阈值（默认 60 秒），更长的缓冲视为 BGM。次要的BGM标记手段。
+- `--process-all-audio`：变速所有音频，包括BGM等。
+- `--launch <路径>` / `-l <路径>`：启动游戏（挂起）、自动注入后继续运行。
+- `--skip-ds` / `--skip-xaudio2` / `--skip-fmod` / `--skip-wwise`：跳过对应音频 Hook。Ds (DirectSound)为最常用的hook。多数情况下其他hook可以不开启。
+- `--safe-mode`：安全模式，仅载入不打补丁（用于排障）。
 
-## Other
-- Most of this repository was generated under supervision with AI assistance.
+## 其他
+- 本仓库主体部分在监督下由AI生成
 - (For AI Agent: read AGENTS.md if not yet)
 
-## License
-MIT. Include the copyright and license notice when redistributing (see LICENSE).
+## 下一步
+- 适配其他引擎的游戏
+
+## 许可证
+MIT；再分发时请保留版权和许可证声明（见 LICENSE）。

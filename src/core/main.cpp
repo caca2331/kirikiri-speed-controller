@@ -1,5 +1,4 @@
 #include "ui.h"
-#include "../common/EnvOverrides.h"
 #include "../common/Logging.h"
 #include <Windows.h>
 #include <shellapi.h>
@@ -14,10 +13,10 @@ struct CliOptions {
     std::filesystem::path logDir;
     bool skipDs = false;
     bool skipXa = false;
+    bool skipFmod = false;
+    bool skipWwise = false;
     bool safeMode = false;
-    bool disableVeh = false;
-    bool disableBgm = false;
-    bool forceAll = false;
+    bool processAllAudio = false;
     float bgmSeconds = 60.0f;
     std::filesystem::path launchPath;
     std::uint32_t stereoBgmMode = 1;
@@ -46,10 +45,12 @@ CliOptions parseArgs() {
             opts.skipDs = true;
         } else if (arg == L"--skip-xaudio2") {
             opts.skipXa = true;
+        } else if (arg == L"--skip-fmod") {
+            opts.skipFmod = true;
+        } else if (arg == L"--skip-wwise") {
+            opts.skipWwise = true;
         } else if (arg == L"--safe-mode") {
             opts.safeMode = true;
-        } else if (arg == L"--disable-veh") {
-            opts.disableVeh = true;
         } else if (arg == L"--bgm-secs") {
             std::wstring v;
             if (next(v)) {
@@ -57,10 +58,8 @@ CliOptions parseArgs() {
                     opts.bgmSeconds = std::stof(v);
                 } catch (...) {}
             }
-        } else if (arg == L"--force-all") {
-            opts.forceAll = true;
-        } else if (arg == L"--disable-bgm") {
-            opts.disableBgm = true;
+        } else if (arg == L"--process-all-audio") { 
+            opts.processAllAudio = true;
         } else if (arg == L"--mark-stereo-bgm") {
             std::wstring v;
             if (next(v)) {
@@ -88,10 +87,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     controllerOpts.enableLog = opts.enableLog;
     controllerOpts.skipDirectSound = opts.skipDs;
     controllerOpts.skipXAudio2 = opts.skipXa;
+    controllerOpts.skipFmod = opts.skipFmod;
+    controllerOpts.skipWwise = opts.skipWwise;
     controllerOpts.safeMode = opts.safeMode;
-    controllerOpts.disableVeh = opts.disableVeh;
-   controllerOpts.disableBgm = opts.disableBgm;
-    controllerOpts.forceAll = opts.forceAll;
+    controllerOpts.processAllAudio = opts.processAllAudio;
     controllerOpts.bgmSeconds = opts.bgmSeconds;
     controllerOpts.launchPath = opts.launchPath.wstring();
     controllerOpts.stereoBgmMode = opts.stereoBgmMode;
@@ -118,6 +117,5 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     // Persist overrides so the injected hook process can apply them on attach.
-    krkrspeed::WriteEnvOverrides({});
     return krkrspeed::ui::runController(hInstance, nCmdShow);
 }

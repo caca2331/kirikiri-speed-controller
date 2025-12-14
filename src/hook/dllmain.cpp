@@ -229,6 +229,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
 
                 const bool skipXa = haveShared ? (shared.skipXAudio2 != 0) : false;
                 const bool skipDs = haveShared ? (shared.skipDirectSound != 0) : false;
+                const bool skipFmod = haveShared ? (shared.skipFmod != 0) : false;
+                const bool skipWwise = haveShared ? (shared.skipWwise != 0) : false;
                 const bool skipImports = false;
 
                 if (skipImports) {
@@ -281,12 +283,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
 
                 stage = "vectored handler";
                 // Lightweight crash breadcrumbs: log first few exceptions with addresses (can be disabled).
-                bool skipVeh = haveShared ? (shared.disableVeh != 0) : false;
-                if (!skipVeh) {
-                    g_vectored = AddVectoredExceptionHandler(TRUE, VectoredHandler);
-                } else {
-                    KRKR_LOG_INFO("KRKR_DISABLE_VEH set; skipping vectored exception handler");
-                }
+                g_vectored = AddVectoredExceptionHandler(TRUE, VectoredHandler);
 
                 stage = "module dump";
                 const bool skipDump = false;
@@ -337,7 +334,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 krkrspeed::DirectSoundHook::Config dsCfg;
                 dsCfg.skip = skipDs;
                 dsCfg.disableBgm = haveShared ? (shared.disableBgm != 0) : false;
-                dsCfg.forceAll = haveShared ? (shared.forceAll != 0) : false;
+                dsCfg.processAllAudio = haveShared ? (shared.processAllAudio != 0) : false;
                 dsCfg.bgmGateSeconds = haveShared ? shared.bgmSecondsGate : 60.0f;
                 dsCfg.stereoBgmMode = haveShared ? shared.stereoBgmMode : 1u;
                 krkrspeed::DirectSoundHook::instance().configure(dsCfg);
@@ -352,7 +349,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 stage = "fmod init";
                 KRKR_LOG_INFO("Init: starting FMODHook::initialize");
                 try {
-                    krkrspeed::FMODHook::instance().initialize();
+                    if (!skipFmod) {
+                        krkrspeed::FMODHook::instance().initialize();
+                    } else {
+                        KRKR_LOG_INFO("KRKR_SKIP_FMOD set; skipping FMOD hooks");
+                    }
                 } catch (...) {
                     KRKR_LOG_ERROR("Init: FMODHook::initialize threw an exception");
                 }
@@ -360,7 +361,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 stage = "wwise init";
                 KRKR_LOG_INFO("Init: starting WwiseHook::initialize");
                 try {
-                    krkrspeed::WwiseHook::instance().initialize();
+                    if (!skipWwise) {
+                        krkrspeed::WwiseHook::instance().initialize();
+                    } else {
+                        KRKR_LOG_INFO("KRKR_SKIP_WWISE set; skipping Wwise hooks");
+                    }
                 } catch (...) {
                     KRKR_LOG_ERROR("Init: WwiseHook::initialize threw an exception");
                 }

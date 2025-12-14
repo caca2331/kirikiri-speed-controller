@@ -12,10 +12,10 @@ struct ControllerOptions {
     bool enableLog = false;
     bool skipDirectSound = false;
     bool skipXAudio2 = false;
+    bool skipFmod = false;
+    bool skipWwise = false;
     bool safeMode = false;
-    bool disableVeh = false;
-    bool disableBgm = false;
-    bool forceAll = false;
+    bool processAllAudio = false;
     float bgmSeconds = 60.0f;
     std::wstring launchPath;
     std::uint32_t stereoBgmMode = 1;

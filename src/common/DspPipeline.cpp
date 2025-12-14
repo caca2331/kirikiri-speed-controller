@@ -1,4 +1,5 @@
 #include "DspPipeline.h"
+#include "Logging.h"
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +38,11 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
                                               DspMode mode) {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     if (bytes == 0 || m_channels == 0) {
+        return {};
+    }
+
+    // Near-1.0 speed: bypass SoundTouch entirely and let callers passthrough the original buffer.
+    if (std::fabs(speedRatio - 1.0f) <= 0.001f) {
         return {};
     }
 
@@ -134,6 +140,7 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
     return output;
 #else
     if (sampleCount < 2 || std::abs(speedRatio - 1.0f) < 0.01f) {
+        KRKR_LOG_WARN("DspPipeline: SoundTouch disabled; speed unchanged (PCM path)");
         return std::vector<std::uint8_t>(data, data + bytes);
     }
     const double inv = 1.0 / speedRatio;
@@ -157,6 +164,11 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
 std::vector<float> DspPipeline::process(const float *data, std::size_t samples, float speedRatio, DspMode mode) {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     if (samples == 0 || m_channels == 0) {
+        return {};
+    }
+
+    // Near-1.0 speed: bypass SoundTouch to avoid unnecessary processing and artifacts.
+    if (std::fabs(speedRatio - 1.0f) <= 0.001f) {
         return {};
     }
 
@@ -245,6 +257,7 @@ std::vector<float> DspPipeline::process(const float *data, std::size_t samples, 
     return output;
 #else
     if (samples < 2 || std::abs(speedRatio - 1.0f) < 0.01f) {
+        KRKR_LOG_WARN("DspPipeline: SoundTouch disabled; speed unchanged (float path)");
         return std::vector<float>(data, data + samples);
     }
     const double inv = 1.0 / speedRatio;

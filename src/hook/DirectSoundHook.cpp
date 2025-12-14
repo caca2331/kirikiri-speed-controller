@@ -36,7 +36,7 @@ void DirectSoundHook::applySharedSettingsFallback() {
         CloseHandle(mapping);
         return;
     }
-    const bool newForce = view->forceAll != 0;
+    const bool newForce = view->processAllAudio != 0;
     const bool newDisable = view->disableBgm != 0;
     const float newGate = view->bgmSecondsGate;
     const std::uint32_t newStereoMode = view->stereoBgmMode;
@@ -46,7 +46,7 @@ void DirectSoundHook::applySharedSettingsFallback() {
     m_forceApply = newForce;
     m_disableBgm = newDisable;
     m_bgmSecondsGate = newGate;
-    m_config.forceAll = m_forceApply;
+    m_config.processAllAudio = m_forceApply;
     m_config.disableBgm = m_disableBgm;
     m_config.bgmGateSeconds = m_bgmSecondsGate;
     m_config.stereoBgmMode = newStereoMode;
@@ -54,7 +54,7 @@ void DirectSoundHook::applySharedSettingsFallback() {
         m_seenMono.store(true); // aggressive/none treat mono as already seen
     }
     if (changed) {
-        KRKR_LOG_INFO(std::string("DS shared settings: forceAll=") + (m_forceApply ? "1" : "0") +
+        KRKR_LOG_INFO(std::string("DS shared settings: processAllAudio=") + (m_forceApply ? "1" : "0") +
                       " disableBgm=" + (m_disableBgm ? "1" : "0") +
                       " gate=" + std::to_string(m_bgmSecondsGate) +
                       " stereoMode=" + std::to_string(m_config.stereoBgmMode));
@@ -71,7 +71,7 @@ void DirectSoundHook::initialize() {
     }
     m_bgmSecondsGate = m_config.bgmGateSeconds;
     m_disableBgm = m_config.disableBgm;
-    m_forceApply = m_config.forceAll;
+    m_forceApply = m_config.processAllAudio;
     m_fragmented.store(true);
     m_loggedFragmentedClear.store(false);
     m_loggedMonoStereo.store(false);
@@ -505,7 +505,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     doDsp = (!gate || totalSec <= gateSeconds);
                     appliedSpeed = userSpeed;
                 } else if (m_forceApply) {
-                    doDsp = true; // forceAll: process BGM too, ignore gate
+                    doDsp = true; 
                     appliedSpeed = userSpeed;
                 }
             }

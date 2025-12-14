@@ -13,10 +13,12 @@ struct SharedSettings {
     std::uint32_t enableLog = 0;
     std::uint32_t skipDirectSound = 0;
     std::uint32_t skipXAudio2 = 0;
+    std::uint32_t skipFmod = 0;
+    std::uint32_t skipWwise = 0;
     std::uint32_t safeMode = 0;
     std::uint32_t disableVeh = 0;
     std::uint32_t disableBgm = 0;
-    std::uint32_t forceAll = 0;
+    std::uint32_t processAllAudio = 0;
     float bgmSecondsGate = 60.0f;
     std::uint32_t stereoBgmMode = 1; // 0=aggressive,1=hybrid(default),2=none
 };

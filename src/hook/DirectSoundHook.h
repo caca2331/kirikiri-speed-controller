@@ -21,7 +21,7 @@ public:
     struct Config {
         bool skip = false;
         bool disableBgm = false;
-        bool forceAll = false;
+        bool processAllAudio = false;
         float bgmGateSeconds = 60.0f;
         std::uint32_t stereoBgmMode = 1; // 0 aggressive,1 hybrid(default),2 none
     };
