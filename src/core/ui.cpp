@@ -11,11 +11,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
 #include <filesystem>
 #include <chrono>
 #include <thread>
 #include <string>
 #include <vector>
+#include <limits>
 
 namespace krkrspeed::ui {
 namespace {
@@ -50,6 +52,7 @@ struct AppState {
     float bgmSeconds = 60.0f; // also used as length gate seconds
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::uint32_t stereoBgmMode = 1;
+    std::wstring searchTerm;
 };
 
 AppState g_state;
@@ -431,6 +434,41 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kLaunchButtonId, BN_CLICKED),
                          reinterpret_cast<LPARAM>(launch));
         }
+
+        // Auto search & hook if requested via CLI.
+        if (!g_state.searchTerm.empty()) {
+            auto toLower = [](std::wstring s) {
+                std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                return s;
+            };
+            const auto needle = toLower(g_state.searchTerm);
+            int bestIdx = -1;
+            size_t bestLen = std::numeric_limits<size_t>::max();
+            for (size_t i = 0; i < g_state.processes.size(); ++i) {
+                auto nameLower = toLower(g_state.processes[i].name);
+                if (nameLower.find(needle) != std::wstring::npos) {
+                    const size_t len = g_state.processes[i].name.length();
+                    if (len < bestLen) {
+                        bestLen = len;
+                        bestIdx = static_cast<int>(i);
+                    }
+                }
+            }
+
+            HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+            if (bestIdx >= 0) {
+                SendMessageW(combo, CB_SETCURSEL, bestIdx, 0);
+                const auto &p = g_state.processes[static_cast<size_t>(bestIdx)];
+                std::wstring msg = L"Auto-selected [" + std::to_wstring(p.pid) + L"] " + p.name + L" via --search \"" + g_state.searchTerm + L"\"";
+                setStatus(statusLabel, msg);
+                KRKR_LOG_INFO(std::string("Auto search hit: ") + std::string(p.name.begin(), p.name.end()));
+                handleApply(hwnd);
+            } else {
+                std::wstring msg = L"--search \"" + g_state.searchTerm + L"\": no process matched; waiting for manual selection.";
+                setStatus(statusLabel, msg);
+                KRKR_LOG_INFO(std::string("Search term not found: ") + std::string(g_state.searchTerm.begin(), g_state.searchTerm.end()));
+            }
+        }
         break;
     }
     case WM_SIZE:
@@ -483,6 +521,7 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.bgmSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
     g_state.stereoBgmMode = opts.stereoBgmMode;
+    g_state.searchTerm = opts.searchTerm;
 }
 
 ControllerOptions getInitialOptions() {

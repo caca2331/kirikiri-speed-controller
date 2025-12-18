@@ -14,7 +14,6 @@ cmake --build build --config Release --target dist_dual_arch
 dist/
   x64/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
   x86/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
-  KrkrSpeedController_x86.lnk (一键启动 x86 控制器的 Windows 快捷方式)
 ```
 任意位数的控制器都可以注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL。
 
@@ -34,6 +33,7 @@ dist/
 - `--bgm-secs <秒>`：BGM 时长阈值（默认 60 秒），更长的缓冲视为 BGM。次要的BGM标记手段。
 - `--process-all-audio`：变速所有音频，包括BGM等。
 - `--launch <路径>` / `-l <路径>`：启动游戏（挂起）、自动注入后继续运行。
+- `--search <名称片段>`：启动控制器后自动在当前可见进程中查找包含该片段的进程名，若有多个匹配则选择名称最短者并尝试自动注入；未命中则正常启动等待手动选择。
 - `--skip-ds` / `--skip-xaudio2` / `--skip-fmod` / `--skip-wwise`：跳过对应音频 Hook。Ds (DirectSound)为最常用的hook。多数情况下其他hook可以不开启。
 - `--safe-mode`：安全模式，仅载入不打补丁（用于排障）。
 

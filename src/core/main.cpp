@@ -20,6 +20,7 @@ struct CliOptions {
     float bgmSeconds = 60.0f;
     std::filesystem::path launchPath;
     std::uint32_t stereoBgmMode = 1;
+    std::wstring searchTerm;
 };
 
 CliOptions parseArgs() {
@@ -72,6 +73,11 @@ CliOptions parseArgs() {
             if (next(v)) {
                 opts.launchPath = v;
             }
+        } else if (arg == L"--search") {
+            std::wstring v;
+            if (next(v)) {
+                opts.searchTerm = v;
+            }
         }
     }
 
@@ -94,6 +100,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     controllerOpts.bgmSeconds = opts.bgmSeconds;
     controllerOpts.launchPath = opts.launchPath.wstring();
     controllerOpts.stereoBgmMode = opts.stereoBgmMode;
+    controllerOpts.searchTerm = opts.searchTerm;
     krkrspeed::ui::setInitialOptions(controllerOpts);
     krkrspeed::SetLoggingEnabled(opts.enableLog);
 

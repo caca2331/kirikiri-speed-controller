@@ -19,6 +19,7 @@ struct ControllerOptions {
     float bgmSeconds = 60.0f;
     std::wstring launchPath;
     std::uint32_t stereoBgmMode = 1;
+    std::wstring searchTerm;
 };
 
 void setInitialOptions(const ControllerOptions &opts);
