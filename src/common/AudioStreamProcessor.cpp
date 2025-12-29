@@ -27,41 +27,44 @@ AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::
     const float denom = std::max(0.01f, userSpeed);
     const float pitchDown = 1.0f / denom;
 
-    std::vector<std::uint8_t> streamIn;
-    streamIn.reserve(m_cbuffer.size() + bytes);
-    streamIn.insert(streamIn.end(), m_cbuffer.begin(), m_cbuffer.end());
-    streamIn.insert(streamIn.end(), data, data + bytes);
-    m_cbuffer.clear();
+    result.output.reserve(bytes);
+    std::size_t need = bytes;
 
-    auto out = m_dsp->process(streamIn.data(), streamIn.size(), pitchDown, DspMode::Pitch);
-    if (out.empty()) {
-        if (shouldLog) {
-            KRKR_LOG_DEBUG("AudioStream: pitch-compensate produced 0 bytes; passthrough key=" +
-                           std::to_string(key));
-        }
-        result.output.assign(data, data + bytes);
-        result.cbufferSize = m_cbuffer.size();
-        result.appliedSpeed = userSpeed;
-        m_lastAppliedSpeed = result.appliedSpeed;
-        return result;
+    // 1) Consume already-processed tail first; do not re-run through DSP.
+    if (!m_cbuffer.empty()) {
+        const std::size_t take = std::min(m_cbuffer.size(), need);
+        result.output.insert(result.output.end(), m_cbuffer.begin(), m_cbuffer.begin() + take);
+        m_cbuffer.erase(m_cbuffer.begin(), m_cbuffer.begin() + take);
+        need -= take;
     }
 
-    if (out.size() > bytes) {
-        result.output.resize(bytes);
-        std::copy_n(out.data(), bytes, result.output.begin());
-        std::size_t excess = out.size() - bytes;
-        m_cbuffer.insert(m_cbuffer.end(), out.data() + bytes, out.data() + out.size());
-    } else if (out.size() < bytes) {
-        const std::size_t pad = bytes - out.size();
-        result.output.resize(bytes);
-        std::fill(result.output.begin(), result.output.begin() + pad, 0);
-        std::copy(out.begin(), out.end(), result.output.begin() + pad);
+    // 2) Process only the new input for the remaining need.
+    if (need > 0) {
+        auto out = m_dsp->process(data, bytes, pitchDown, DspMode::Pitch);
+        if (out.empty()) {
+            if (shouldLog) {
+                KRKR_LOG_DEBUG("AudioStream: pitch-compensate produced 0 bytes; passthrough key=" +
+                               std::to_string(key));
+            }
+            out.assign(data, data + bytes);
+        }
+
+        const std::size_t take = std::min<std::size_t>(need, out.size());
+        result.output.insert(result.output.end(), out.begin(), out.begin() + take);
+        need -= take;
+        if (out.size() > take) {
+            m_cbuffer.insert(m_cbuffer.end(), out.begin() + take, out.end());
+        }
+    }
+
+    // 3) Front-pad if still short to satisfy exact Abuffer length (per new requirement).
+    if (need > 0) {
+        result.output.insert(result.output.begin(), need, 0);
         if (shouldLog) {
-            KRKR_LOG_DEBUG("AudioStream: zero-padded " + std::to_string(pad) +
+            KRKR_LOG_DEBUG("AudioStream: front-padded " + std::to_string(need) +
                            " bytes (pitch) key=" + std::to_string(key));
         }
-    } else {
-        result.output = std::move(out);
+        need = 0;
     }
 
     const std::size_t bytesPerSec = std::max<std::size_t>(1, m_blockAlign * m_sampleRate);
@@ -69,7 +72,8 @@ AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::
         std::max<std::size_t>(m_blockAlign ? m_blockAlign : 1, static_cast<std::size_t>(bytesPerSec * 0.1));
     if (m_cbuffer.size() > cap) {
         const size_t overflow = m_cbuffer.size() - cap;
-        m_cbuffer.erase(m_cbuffer.begin(), m_cbuffer.begin() + overflow);
+        // Keep earliest data; drop newest overflow to preserve continuity.
+        m_cbuffer.resize(cap);
         KRKR_LOG_WARN("AudioStream: cbuffer overflow trimmed overflow=" + std::to_string(overflow) +
                       " cap=" + std::to_string(cap) +
                       " key=" + std::to_string(key));
@@ -91,6 +95,9 @@ void AudioStreamProcessor::resetIfIdle(std::chrono::steady_clock::time_point now
                            " idleMs=" + std::to_string(idleMs.count()));
         }
         m_cbuffer.clear();
+        if (m_dsp) {
+            m_dsp->flush();
+        }
     }
 }
 
