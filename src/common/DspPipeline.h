@@ -37,6 +37,9 @@ public:
     // Process float samples (range -1.0 to 1.0).
     std::vector<float> process(const float *data, std::size_t samples, float speedRatio, DspMode mode = DspMode::Tempo);
 
+    // Flush internal buffered samples/state.
+    void flush();
+
     std::uint32_t sampleRate() const { return m_sampleRate; }
     std::uint32_t channels() const { return m_channels; }
     const DspConfig &config() const { return m_config; }

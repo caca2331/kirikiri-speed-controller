@@ -276,4 +276,11 @@ std::vector<float> DspPipeline::process(const float *data, std::size_t samples, 
 #endif
 }
 
+void DspPipeline::flush() {
+    std::lock_guard<std::mutex> lock(m_impl->mutex);
+#ifdef USE_SOUNDTOUCH
+    m_impl->touch.clear();
+#endif
+}
+
 } // namespace krkrspeed

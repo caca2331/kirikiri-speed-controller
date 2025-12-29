@@ -6,18 +6,18 @@
 #include "ControllerCore.h"
 
 #include "../common/Logging.h"
-#include "../hook/XAudio2Hook.h"
-
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
 #include <filesystem>
 #include <chrono>
 #include <thread>
 #include <string>
 #include <vector>
+#include <limits>
 
 namespace krkrspeed::ui {
 namespace {
@@ -41,7 +41,6 @@ struct AppState {
     std::vector<ProcessInfo> processes;
     float currentSpeed = 2.0f;
     float lastValidSpeed = 2.0f;
-    float gateSeconds = 60.0f;
     std::filesystem::path launchPath;
     bool enableLog = false;
     bool skipDirectSound = false;
@@ -50,9 +49,10 @@ struct AppState {
     bool skipWwise = false;
     bool safeMode = false;
     bool processAllAudio = false;
-    float bgmSeconds = 60.0f;
+    float bgmSeconds = 60.0f; // also used as length gate seconds
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::uint32_t stereoBgmMode = 1;
+    std::wstring searchTerm;
 };
 
 AppState g_state;
@@ -163,9 +163,6 @@ void handleApply(HWND hwnd) {
     g_state.currentSpeed = speed;
     g_state.processAllAudio = (ignoreBgm && SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
-    krkrspeed::XAudio2Hook::instance().setUserSpeed(speed);
-    krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
-
     const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
     if (index < 0 || index >= static_cast<int>(g_state.processes.size())) {
         setStatus(statusLabel, L"Select a process to hook first.");
@@ -184,7 +181,6 @@ void handleApply(HWND hwnd) {
     controller::SharedConfig cfg{};
     cfg.speed = speed;
     cfg.lengthGateEnabled = true;
-    cfg.lengthGateSeconds = g_state.gateSeconds;
     cfg.enableLog = g_state.enableLog;
     cfg.skipDirectSound = g_state.skipDirectSound;
     cfg.skipXAudio2 = g_state.skipXAudio2;
@@ -225,7 +221,7 @@ void handleApply(HWND hwnd) {
     if (controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, error)) {
         wchar_t message[160] = {};
         swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate on @ %.2fs",
-                   proc.name.c_str(), proc.pid, speed, g_state.gateSeconds);
+                   proc.name.c_str(), proc.pid, speed, g_state.bgmSeconds);
         setStatus(statusLabel, message);
     } else {
         const controller::ProcessArch selfArch = controller::getSelfArch();
@@ -244,7 +240,6 @@ void handleLaunch(HWND hwnd) {
     controller::SharedConfig cfg{};
     cfg.speed = g_state.currentSpeed;
     cfg.lengthGateEnabled = true;
-    cfg.lengthGateSeconds = g_state.gateSeconds;
     cfg.enableLog = g_state.enableLog;
     cfg.skipDirectSound = g_state.skipDirectSound;
     cfg.skipXAudio2 = g_state.skipXAudio2;
@@ -402,9 +397,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      0, 66, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
 
-        krkrspeed::XAudio2Hook::instance().setUserSpeed(g_state.lastValidSpeed);
-        krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
-
         CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
                         12, 96, 400, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
 
@@ -441,6 +433,41 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             SetWindowTextW(pathEdit, g_initialOptions.launchPath.c_str());
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kLaunchButtonId, BN_CLICKED),
                          reinterpret_cast<LPARAM>(launch));
+        }
+
+        // Auto search & hook if requested via CLI.
+        if (!g_state.searchTerm.empty()) {
+            auto toLower = [](std::wstring s) {
+                std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                return s;
+            };
+            const auto needle = toLower(g_state.searchTerm);
+            int bestIdx = -1;
+            size_t bestLen = std::numeric_limits<size_t>::max();
+            for (size_t i = 0; i < g_state.processes.size(); ++i) {
+                auto nameLower = toLower(g_state.processes[i].name);
+                if (nameLower.find(needle) != std::wstring::npos) {
+                    const size_t len = g_state.processes[i].name.length();
+                    if (len < bestLen) {
+                        bestLen = len;
+                        bestIdx = static_cast<int>(i);
+                    }
+                }
+            }
+
+            HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+            if (bestIdx >= 0) {
+                SendMessageW(combo, CB_SETCURSEL, bestIdx, 0);
+                const auto &p = g_state.processes[static_cast<size_t>(bestIdx)];
+                std::wstring msg = L"Auto-selected [" + std::to_wstring(p.pid) + L"] " + p.name + L" via --search \"" + g_state.searchTerm + L"\"";
+                setStatus(statusLabel, msg);
+                KRKR_LOG_INFO(std::string("Auto search hit: ") + std::string(p.name.begin(), p.name.end()));
+                handleApply(hwnd);
+            } else {
+                std::wstring msg = L"--search \"" + g_state.searchTerm + L"\": no process matched; waiting for manual selection.";
+                setStatus(statusLabel, msg);
+                KRKR_LOG_INFO(std::string("Search term not found: ") + std::string(g_state.searchTerm.begin(), g_state.searchTerm.end()));
+            }
         }
         break;
     }
@@ -492,9 +519,9 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.safeMode = opts.safeMode;
     g_state.processAllAudio = opts.processAllAudio;
     g_state.bgmSeconds = opts.bgmSeconds;
-    g_state.gateSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
     g_state.stereoBgmMode = opts.stereoBgmMode;
+    g_state.searchTerm = opts.searchTerm;
 }
 
 ControllerOptions getInitialOptions() {

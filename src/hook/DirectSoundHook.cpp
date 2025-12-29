@@ -306,11 +306,6 @@ HRESULT WINAPI DirectSoundHook::UnlockHook(IDirectSoundBuffer *self, LPVOID pAud
     }
 }
 
-HRESULT WINAPI DirectSoundHook::UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
-                                            LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    return UnlockHook(reinterpret_cast<IDirectSoundBuffer *>(self), pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
-}
-
 ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
     auto &hook = DirectSoundHook::instance();
     if (!hook.m_origRelease) {
@@ -377,7 +372,6 @@ ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
 
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    static bool disableDsp = false;
     if (!m_loggedUnlockOnce.exchange(true)) {
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
@@ -472,7 +466,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     KRKR_LOG_INFO("DS: detected non-fragmented audio (>1s chunk); disabling tiny-chunk skip");
                 }
             }
-            const bool tooShort = false; // short-guard disabled per request
             const bool stereoIsBgm = (m_config.stereoBgmMode == 0) ||
                                      (m_config.stereoBgmMode == 1 && m_seenMono.load());
             const bool passLengthGate = totalSec > m_bgmSecondsGate;
@@ -487,27 +480,14 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
             const bool isBgm = ((((info.channels > 1) && stereoIsBgm) || info.isLikelyBgm) && !m_disableBgm);
             const bool treatAsBgm = isBgm;
 
-            if (treatAsBgm && !m_forceApply && info.freqDirty && info.baseFrequency > 0) {
-                if (FAILED(self->SetFrequency(info.baseFrequency))) {
-                    KRKR_LOG_WARN("DS: failed to restore base frequency on BGM buf=" +
-                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                } else if (shouldLog) {
-                    KRKR_LOG_INFO("DS: restored base frequency after BGM marking buf=" +
-                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                }
-                info.freqDirty = false;
-                info.currentFrequency = info.baseFrequency;
-            }
             bool doDsp = false;
             float appliedSpeed = 1.0f;
-            if (!disableDsp) {
-                if (!treatAsBgm) {
-                    doDsp = (!gate || totalSec <= gateSeconds);
-                    appliedSpeed = userSpeed;
-                } else if (m_forceApply) {
-                    doDsp = true; 
-                    appliedSpeed = userSpeed;
-                }
+            if (!treatAsBgm) {
+                doDsp = (!gate || totalSec <= gateSeconds);
+                appliedSpeed = userSpeed;
+            } else if (m_forceApply) {
+                doDsp = true;
+                appliedSpeed = userSpeed;
             }
             if (shouldLog) {
                 KRKR_LOG_DEBUG("DS Unlock: buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
@@ -528,11 +508,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
                 if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
                 const DWORD clamped = static_cast<DWORD>(clampedD);
-                if (clamped != info.currentFrequency) {
-                    self->SetFrequency(clamped);
-                    info.freqDirty = true;
-                    info.currentFrequency = clamped;
-                }
                 appliedSpeed = base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
                 if (info.stream) {
                     auto res = info.stream->process(combined.data(), combined.size(), appliedSpeed, shouldLog,
@@ -548,6 +523,35 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     }
                 }
                 lastAppliedSpeedForPlay = appliedSpeed;
+            }
+
+            // Enforce desired frequency each unlock to override game changes.
+            const DWORD desiredFreq = [&]() {
+                if (doDsp) {
+                    const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
+                    const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
+                    double clampedD = std::clamp(scaled, static_cast<double>(DSBFREQUENCY_MIN),
+                                                 static_cast<double>(DSBFREQUENCY_MAX));
+                    return static_cast<DWORD>(clampedD);
+                }
+                return static_cast<DWORD>(info.baseFrequency ? info.baseFrequency : info.sampleRate);
+            }();
+            DWORD currentFreq = 0;
+            bool freqMismatch = true;
+            if (SUCCEEDED(self->GetFrequency(&currentFreq))) {
+                freqMismatch = (currentFreq != desiredFreq);
+            }
+            if (freqMismatch) {
+                if (FAILED(self->SetFrequency(desiredFreq))) {
+                    KRKR_LOG_WARN("DS: SetFrequency failed buf=" +
+                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                  " desired=" + std::to_string(desiredFreq));
+                } else if (shouldLog) {
+                    KRKR_LOG_DEBUG("DS: enforced frequency buf=" +
+                                   std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                   " desired=" + std::to_string(desiredFreq) +
+                                   " prev=" + std::to_string(currentFreq));
+                }
             }
             info.processedFrames += frames;
             break; // processed successfully
@@ -645,7 +649,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
 
     // Track expected playback end time for stream reset heuristic.
     const float applied = lastAppliedSpeedForPlay > 0.01f ? lastAppliedSpeedForPlay : 1.0f;
-    const float playTime = processedDurationSec / applied;
     if (processedInfo->stream) {
         processedInfo->stream->recordPlaybackEnd(processedDurationSec, applied);
     }
@@ -655,10 +658,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
 
 void DirectSoundHook::patchDeviceVtable(IDirectSound8 *ds8) {
     if (!ds8) return;
-    if (m_disableVtablePatch) {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping device vtable patch");
-        return;
-    }
     std::lock_guard<std::mutex> lock(m_vtableMutex);
     if (m_deviceVtables.find(ds8) != m_deviceVtables.end()) {
         return;
@@ -682,10 +681,6 @@ void DirectSoundHook::patchDeviceVtable(IDirectSound8 *ds8) {
 
 void DirectSoundHook::patchBufferVtable(IDirectSoundBuffer *buf) {
     if (!buf) return;
-    if (m_disableVtablePatch) {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping buffer vtable patch");
-        return;
-    }
     std::lock_guard<std::mutex> lock(m_vtableMutex);
     if (m_bufferVtables.find(buf) != m_bufferVtables.end()) {
         return;

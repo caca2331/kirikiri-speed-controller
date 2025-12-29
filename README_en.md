@@ -14,7 +14,6 @@ cmake --build build --config Release --target dist_dual_arch
 dist/
   x64/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
   x86/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
-  KrkrSpeedController_x86.lnk  (Windows shortcut to launch the x86 controller)
 ```
 Either controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the sibling dist folder.
 
@@ -34,6 +33,7 @@ Either controller can inject into both x86 and x64 games: it spawns the injector
 - `--bgm-secs <seconds>` : BGM length gate (default 60s); longer buffers treated as BGM. Secondary way to label bgm.
 - `--process-all-audio` : speed up all audios including BGM.
 - `--launch <path>` / `-l <path>` : start a game suspended, inject automatically, then resume.
+- `--search <name>` : on startup, find visible processes whose name contains this substring; if multiple match, pick the one with the shortest name and auto-inject. If none match, the controller starts normally and waits for manual selection.
 - `--skip-ds` / `--skip-xaudio2` / `--skip-fmod` / `--skip-wwise` : skip specific audio hooks. Ds (DirectSound) is mostly used. Other hooks can be skipped in most cases.
 - `--safe-mode` : load without installing any hooks/patches (diagnostic).
 

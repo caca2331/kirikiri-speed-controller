@@ -39,6 +39,7 @@ private:
     std::vector<std::uint8_t> m_cbuffer;
     std::chrono::steady_clock::time_point m_lastPlayEnd{};
     float m_lastAppliedSpeed = 1.0f;
+    bool m_padNext = true;
 };
 
 } // namespace krkrspeed
