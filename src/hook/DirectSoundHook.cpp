@@ -480,17 +480,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
             const bool isBgm = ((((info.channels > 1) && stereoIsBgm) || info.isLikelyBgm) && !m_disableBgm);
             const bool treatAsBgm = isBgm;
 
-            if (treatAsBgm && !m_forceApply && info.freqDirty && info.baseFrequency > 0) {
-                if (FAILED(self->SetFrequency(info.baseFrequency))) {
-                    KRKR_LOG_WARN("DS: failed to restore base frequency on BGM buf=" +
-                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                } else if (shouldLog) {
-                    KRKR_LOG_INFO("DS: restored base frequency after BGM marking buf=" +
-                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                }
-                info.freqDirty = false;
-                info.currentFrequency = info.baseFrequency;
-            }
             bool doDsp = false;
             float appliedSpeed = 1.0f;
             if (!treatAsBgm) {
@@ -519,11 +508,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
                 if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
                 const DWORD clamped = static_cast<DWORD>(clampedD);
-                if (clamped != info.currentFrequency) {
-                    self->SetFrequency(clamped);
-                    info.freqDirty = true;
-                    info.currentFrequency = clamped;
-                }
                 appliedSpeed = base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
                 if (info.stream) {
                     auto res = info.stream->process(combined.data(), combined.size(), appliedSpeed, shouldLog,
@@ -539,6 +523,35 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     }
                 }
                 lastAppliedSpeedForPlay = appliedSpeed;
+            }
+
+            // Enforce desired frequency each unlock to override game changes.
+            const DWORD desiredFreq = [&]() {
+                if (doDsp) {
+                    const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
+                    const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
+                    double clampedD = std::clamp(scaled, static_cast<double>(DSBFREQUENCY_MIN),
+                                                 static_cast<double>(DSBFREQUENCY_MAX));
+                    return static_cast<DWORD>(clampedD);
+                }
+                return static_cast<DWORD>(info.baseFrequency ? info.baseFrequency : info.sampleRate);
+            }();
+            DWORD currentFreq = 0;
+            bool freqMismatch = true;
+            if (SUCCEEDED(self->GetFrequency(&currentFreq))) {
+                freqMismatch = (currentFreq != desiredFreq);
+            }
+            if (freqMismatch) {
+                if (FAILED(self->SetFrequency(desiredFreq))) {
+                    KRKR_LOG_WARN("DS: SetFrequency failed buf=" +
+                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                  " desired=" + std::to_string(desiredFreq));
+                } else if (shouldLog) {
+                    KRKR_LOG_DEBUG("DS: enforced frequency buf=" +
+                                   std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                   " desired=" + std::to_string(desiredFreq) +
+                                   " prev=" + std::to_string(currentFreq));
+                }
             }
             info.processedFrames += frames;
             break; // processed successfully
