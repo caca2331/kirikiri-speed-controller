@@ -31,6 +31,7 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
 ### Controller CLI options
 - `--log` / `--enable-log` : enable logging for controller + hook.
 - `--log-dir <path>` : override log output directory (default: beside the controller, `dist/KrkrSpeedController`).
+- `--speed <value>` : set the initial speed on startup (default 1.5).
 - `--mark-stereo-bgm <aggressive|hybrid|none>` : stereo→BGM heuristic (default `hybrid`). In many games voices are mono and BGMs are stereo. Major way to label bgm.
 - `--bgm-secs <seconds>` : BGM length gate (default 60s); longer buffers treated as BGM. Secondary way to label bgm.
 - `--process-all-audio` : speed up all audios including BGM.

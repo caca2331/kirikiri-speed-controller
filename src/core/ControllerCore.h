@@ -21,7 +21,7 @@ struct ProcessInfo {
 };
 
 struct SharedConfig {
-    float speed = 2.0f;
+    float speed = 1.5f;
     bool lengthGateEnabled = true;
     float bgmSeconds = 60.0f;
     bool enableLog = false;

@@ -39,8 +39,8 @@ using controller::ProcessInfo;
 
 struct AppState {
     std::vector<ProcessInfo> processes;
-    float currentSpeed = 2.0f;
-    float lastValidSpeed = 2.0f;
+    float currentSpeed = 1.5f;
+    float lastValidSpeed = 1.5f;
     std::filesystem::path launchPath;
     bool enableLog = false;
     bool skipDirectSound = false;
@@ -384,7 +384,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                       0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
 
         g_speedLabel = CreateWindowExW(0, L"STATIC", L"Speed (0.5-2.3)", WS_CHILD | WS_VISIBLE, 12, 68, 120, 20, hwnd, nullptr, nullptr, nullptr);
-        HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"2.00",
+        wchar_t speedText[32] = {};
+        swprintf_s(speedText, L"%.2f", g_state.currentSpeed);
+        HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                          140, 66, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
         HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
@@ -518,6 +520,8 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.skipWwise = opts.skipWwise;
     g_state.safeMode = opts.safeMode;
     g_state.processAllAudio = opts.processAllAudio;
+    g_state.currentSpeed = std::clamp(opts.speed, 0.5f, 10.0f);
+    g_state.lastValidSpeed = g_state.currentSpeed;
     g_state.bgmSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
     g_state.stereoBgmMode = opts.stereoBgmMode;

@@ -31,6 +31,7 @@ x86 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数
 ### 控制器命令行参数
 - `--log` / `--enable-log`：开启控制器和 Hook 日志。
 - `--log-dir <路径>`：指定日志输出目录（默认与控制器同目录，即 `dist/KrkrSpeedController`）。
+- `--speed <倍率>`：启动时设置速度（默认 1.5）。
 - `--mark-stereo-bgm <aggressive|hybrid|none>`：立体声→BGM 判定策略，默认 `hybrid`。在多数游戏中，语音是单通道的，而BGM是立体声的。主要的BGM标记手段。
 - `--bgm-secs <秒>`：BGM 时长阈值（默认 60 秒），更长的缓冲视为 BGM。次要的BGM标记手段。
 - `--process-all-audio`：变速所有音频，包括BGM等。
