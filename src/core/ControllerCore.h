@@ -56,6 +56,7 @@ ProcessArch getSelfArch();
 bool ensureDebugPrivilege();
 std::filesystem::path controllerDirectory();
 std::vector<ProcessInfo> enumerateVisibleProcesses();
+std::vector<ProcessInfo> enumerateSessionProcesses();
 bool queryProcessArch(DWORD pid, ProcessArch &archOut, std::wstring &error);
 bool getProcessExePath(DWORD pid, std::wstring &pathOut, std::wstring &error);
 bool getDllArch(const std::filesystem::path &path, ProcessArch &archOut, std::wstring &error);

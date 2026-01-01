@@ -16,6 +16,7 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <unordered_set>
 #include <limits>
 
 namespace krkrspeed::ui {
@@ -33,6 +34,9 @@ constexpr int kIgnoreBgmCheckId = 1009;
 constexpr int kIgnoreBgmLabelId = 1010;
 constexpr int kAutoHookCheckId = 1011;
 constexpr int kAutoHookLabelId = 1012;
+constexpr UINT kAutoHookTimerId = 3001;
+constexpr UINT kAutoHookIntervalMs = 1000;
+constexpr UINT kMsgAutoSelectPid = WM_APP + 2;
 constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
 constexpr int kHotkeyToggleSpeedId = 2001;
 constexpr int kHotkeySpeedUpId = 2002;
@@ -45,6 +49,8 @@ using controller::SpeedControlState;
 using controller::SpeedHotkeyAction;
 
 bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error);
+void refreshProcessList(HWND combo, HWND statusLabel, bool quiet);
+controller::SharedConfig buildSharedConfig(float speed);
 
 struct AppState {
     std::vector<ProcessInfo> processes;
@@ -70,6 +76,9 @@ static HWND g_pathLabel = nullptr;
 static HWND g_speedLabel = nullptr;
 static HWND g_autoHookCheck = nullptr;
 static HWND g_autoHookLabel = nullptr;
+static std::unordered_set<DWORD> g_knownPids;
+static std::unordered_set<DWORD> g_autoHookAttempted;
+static DWORD g_pendingAutoSelectPid = 0;
 
 void setStatus(HWND statusLabel, const std::wstring &text) {
     SetWindowTextW(statusLabel, text.c_str());
@@ -131,6 +140,133 @@ void updateAutoHookCheckbox(HWND hwnd) {
     }
     const bool enabled = controller::isAutoHookEnabled(exePath, proc.name);
     SendMessageW(g_autoHookCheck, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+bool selectProcessByPid(HWND hwnd, DWORD pid) {
+    HWND combo = GetDlgItem(hwnd, kProcessComboId);
+    if (!combo || pid == 0) return false;
+    const int count = static_cast<int>(SendMessageW(combo, CB_GETCOUNT, 0, 0));
+    wchar_t item[256] = {};
+    for (int i = 0; i < count; ++i) {
+        if (SendMessageW(combo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(item)) > 0) {
+            if (wcsncmp(item, L"[", 1) == 0) {
+                wchar_t *end = nullptr;
+                DWORD listedPid = std::wcstoul(item + 1, &end, 10);
+                if (listedPid == pid) {
+                    SendMessageW(combo, CB_SETCURSEL, i, 0);
+                    updateAutoHookCheckbox(hwnd);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConfig cfg) {
+    std::thread([hwnd, proc, cfg]() {
+        std::wstring err;
+        controller::ProcessArch targetArch = controller::ProcessArch::Unknown;
+        if (!controller::queryProcessArch(proc.pid, targetArch, err)) {
+            KRKR_LOG_WARN(std::string("Auto-hook arch query failed for pid=") + std::to_string(proc.pid));
+            return;
+        }
+        if (!controller::writeSharedSettingsForPid(proc.pid, cfg, err)) {
+            KRKR_LOG_WARN(std::string("Auto-hook shared settings failed for pid=") + std::to_string(proc.pid));
+            return;
+        }
+
+        const auto baseDir = controller::controllerDirectory();
+        std::filesystem::path dllPath;
+        std::wstring archError;
+        if (!controller::selectHookForArch(baseDir, targetArch, dllPath, archError)) {
+            KRKR_LOG_WARN("Auto-hook selectHookForArch failed");
+            return;
+        }
+
+        controller::ProcessArch dllArch = controller::ProcessArch::Unknown;
+        std::wstring dllArchError;
+        if (!controller::getDllArch(dllPath, dllArch, dllArchError)) {
+            KRKR_LOG_WARN("Auto-hook getDllArch failed");
+            return;
+        }
+        if (targetArch != controller::ProcessArch::Unknown && dllArch != controller::ProcessArch::Unknown &&
+            targetArch != dllArch) {
+            KRKR_LOG_WARN("Auto-hook DLL arch mismatch");
+            return;
+        }
+
+        if (!controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, err)) {
+            KRKR_LOG_WARN(std::string("Auto-hook inject failed for pid=") + std::to_string(proc.pid));
+            return;
+        }
+        KRKR_LOG_INFO(std::string("Auto-hook injected pid=") + std::to_string(proc.pid));
+        if (hwnd) {
+            PostMessageW(hwnd, kMsgAutoSelectPid, static_cast<WPARAM>(proc.pid), 0);
+        }
+    }).detach();
+}
+
+void pollAutoHook(HWND hwnd) {
+    HWND combo = GetDlgItem(hwnd, kProcessComboId);
+    HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    if (!combo || !statusLabel) return;
+
+    const bool dropdownOpen = (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) != 0);
+    if (!dropdownOpen) {
+        refreshProcessList(combo, statusLabel, true);
+        updateAutoHookCheckbox(hwnd);
+        if (g_pendingAutoSelectPid != 0) {
+            if (selectProcessByPid(hwnd, g_pendingAutoSelectPid)) {
+                g_pendingAutoSelectPid = 0;
+            }
+        }
+    }
+
+    std::unordered_set<DWORD> current;
+    std::vector<ProcessInfo> newProcesses;
+    const auto sessionProcesses = controller::enumerateSessionProcesses();
+    current.reserve(sessionProcesses.size());
+    for (const auto &proc : sessionProcesses) {
+        current.insert(proc.pid);
+        if (g_knownPids.find(proc.pid) == g_knownPids.end()) {
+            newProcesses.push_back(proc);
+        }
+    }
+
+    for (auto it = g_autoHookAttempted.begin(); it != g_autoHookAttempted.end();) {
+        if (current.find(*it) == current.end()) {
+            it = g_autoHookAttempted.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    g_knownPids = std::move(current);
+
+    if (newProcesses.empty()) return;
+
+    HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
+    if (editSpeed) {
+        readSpeedFromEdit(editSpeed);
+    }
+    syncProcessAllAudioFromCheckbox(hwnd);
+    const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
+    controller::SharedConfig cfg = buildSharedConfig(effectiveSpeed);
+
+    for (const auto &proc : newProcesses) {
+        if (g_autoHookAttempted.find(proc.pid) != g_autoHookAttempted.end()) continue;
+        std::wstring exePath;
+        std::wstring error;
+        if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+            continue;
+        }
+        if (!controller::isAutoHookEnabled(exePath, proc.name)) {
+            continue;
+        }
+        g_autoHookAttempted.insert(proc.pid);
+        scheduleAutoHook(hwnd, proc, cfg);
+    }
 }
 
 void handleAutoHookToggle(HWND hwnd) {
@@ -558,6 +694,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
         updateAutoHookCheckbox(hwnd);
+        g_knownPids.clear();
+        const auto sessionProcesses = controller::enumerateSessionProcesses();
+        for (const auto &proc : sessionProcesses) {
+            g_knownPids.insert(proc.pid);
+        }
+        SetTimer(hwnd, kAutoHookTimerId, kAutoHookIntervalMs, nullptr);
         registerControllerHotkeys(hwnd, GetDlgItem(hwnd, kStatusLabelId));
 
         HWND tooltip = createTooltip(hwnd);
@@ -633,6 +775,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         break;
     }
+    case WM_TIMER:
+        if (wParam == kAutoHookTimerId) {
+            pollAutoHook(hwnd);
+            return 0;
+        }
+        break;
     case WM_HOTKEY: {
         HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
         HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
@@ -675,6 +823,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId), true);
         return 0;
     }
+    case kMsgAutoSelectPid: {
+        DWORD pid = static_cast<DWORD>(wParam);
+        g_pendingAutoSelectPid = pid;
+        HWND combo = GetDlgItem(hwnd, kProcessComboId);
+        if (combo && SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) == 0) {
+            if (selectProcessByPid(hwnd, pid)) {
+                g_pendingAutoSelectPid = 0;
+            }
+        }
+        return 0;
+    }
     case WM_NOTIFY: {
         auto *hdr = reinterpret_cast<NMHDR *>(lParam);
         if (hdr && hdr->idFrom == kLinkId && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
@@ -684,6 +843,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         break;
     }
     case WM_DESTROY:
+        KillTimer(hwnd, kAutoHookTimerId);
         UnregisterHotKey(hwnd, kHotkeyToggleSpeedId);
         UnregisterHotKey(hwnd, kHotkeySpeedUpId);
         UnregisterHotKey(hwnd, kHotkeySpeedDownId);

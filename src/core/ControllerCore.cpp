@@ -520,6 +520,50 @@ std::vector<ProcessInfo> enumerateVisibleProcesses() {
     return result;
 }
 
+std::vector<ProcessInfo> enumerateSessionProcesses() {
+    std::vector<ProcessInfo> result;
+
+    DWORD currentSession = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &currentSession)) {
+        KRKR_LOG_WARN("ProcessIdToSessionId failed for current process; defaulting to no session filter");
+        currentSession = (std::numeric_limits<DWORD>::max)();
+    }
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        KRKR_LOG_ERROR("CreateToolhelp32Snapshot failed: " + std::to_string(GetLastError()));
+        return result;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            DWORD session = 0;
+            if (!ProcessIdToSessionId(entry.th32ProcessID, &session)) {
+                continue;
+            }
+            if (session == 0 || session != currentSession) {
+                continue; // skip services and other sessions
+            }
+
+            ProcessInfo info;
+            info.name = entry.szExeFile;
+            info.pid = entry.th32ProcessID;
+            info.hasWindow = false;
+            result.push_back(std::move(info));
+        } while (Process32NextW(snapshot, &entry));
+    } else {
+        KRKR_LOG_ERROR("Process32FirstW failed: " + std::to_string(GetLastError()));
+    }
+
+    CloseHandle(snapshot);
+    std::sort(result.begin(), result.end(), [](const ProcessInfo &a, const ProcessInfo &b) {
+        return a.name < b.name;
+    });
+    return result;
+}
+
 bool queryProcessArch(DWORD pid, ProcessArch &archOut, std::wstring &error) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process) {
