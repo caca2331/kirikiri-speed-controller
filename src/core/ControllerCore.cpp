@@ -337,6 +337,11 @@ bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName
     return saveAutoHookConfig(error);
 }
 
+std::size_t autoHookEntryCount() {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    return g_autoHookEntries.size();
+}
+
 float clampSpeed(float speed) {
     return std::clamp(speed, 0.5f, 10.0f);
 }
@@ -514,9 +519,6 @@ std::vector<ProcessInfo> enumerateVisibleProcesses() {
     }
 
     CloseHandle(snapshot);
-    std::sort(result.begin(), result.end(), [](const ProcessInfo &a, const ProcessInfo &b) {
-        return a.name < b.name;
-    });
     return result;
 }
 

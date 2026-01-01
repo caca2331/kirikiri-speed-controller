@@ -5,6 +5,7 @@
 #endif
 
 #include <Windows.h>
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -70,6 +71,7 @@ std::wstring describeArch(ProcessArch arch);
 void loadAutoHookConfig();
 bool isAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
+std::size_t autoHookEntryCount();
 
 float clampSpeed(float speed);
 float roundSpeed(float speed);
