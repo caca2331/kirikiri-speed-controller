@@ -25,7 +25,6 @@ namespace {
 constexpr int kProcessComboId = 1001;
 constexpr int kRefreshButtonId = 1002;
 constexpr int kSpeedEditId = 1003;
-constexpr int kApplyButtonId = 1004;
 constexpr int kStatusLabelId = 1005;
 constexpr int kLinkId = 1006;
 constexpr int kPathEditId = 1007;
@@ -52,11 +51,21 @@ bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error);
 void refreshProcessList(HWND combo, HWND statusLabel, bool quiet);
 controller::SharedConfig buildSharedConfig(float speed);
 void updateAutoHookCheckbox(HWND hwnd);
+void updateHookButtonState(HWND hwnd);
+bool pruneHookedPids(const std::unordered_set<DWORD> &current);
 
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     if (!combo || !statusLabel) return;
     refreshProcessList(combo, statusLabel, true);
     updateAutoHookCheckbox(hwnd);
+    const auto sessionProcesses = controller::enumerateSessionProcesses();
+    std::unordered_set<DWORD> current;
+    current.reserve(sessionProcesses.size());
+    for (const auto &proc : sessionProcesses) {
+        current.insert(proc.pid);
+    }
+    pruneHookedPids(current);
+    updateHookButtonState(hwnd);
 }
 
 struct AppState {
@@ -85,8 +94,10 @@ static HWND g_autoHookCheck = nullptr;
 static HWND g_autoHookLabel = nullptr;
 static std::unordered_set<DWORD> g_knownPids;
 static std::unordered_set<DWORD> g_autoHookAttempted;
+static std::unordered_set<DWORD> g_hookedPids;
 static DWORD g_pendingAutoSelectPid = 0;
 static bool g_pendingAutoHookRefresh = false;
+static WNDPROC g_speedEditProc = nullptr;
 
 void setStatus(HWND statusLabel, const std::wstring &text) {
     SetWindowTextW(statusLabel, text.c_str());
@@ -150,6 +161,43 @@ void updateAutoHookCheckbox(HWND hwnd) {
     SendMessageW(g_autoHookCheck, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
+void updateHookButtonState(HWND hwnd) {
+    HWND hookButton = GetDlgItem(hwnd, kRefreshButtonId);
+    if (!hookButton) return;
+
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        SetWindowTextW(hookButton, L"Hook");
+        EnableWindow(hookButton, TRUE);
+        return;
+    }
+
+    const bool hooked = (g_hookedPids.find(proc.pid) != g_hookedPids.end());
+    if (hooked) {
+        SetWindowTextW(hookButton, L"Hooked");
+        EnableWindow(hookButton, FALSE);
+    } else {
+        SetWindowTextW(hookButton, L"Hook");
+        EnableWindow(hookButton, TRUE);
+    }
+}
+
+void applySettingsToSelectedIfHooked(HWND hwnd) {
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        return;
+    }
+    if (g_hookedPids.find(proc.pid) == g_hookedPids.end()) {
+        return;
+    }
+    controller::SharedConfig cfg = buildSharedConfig(g_state.speed.currentSpeed);
+    if (!controller::applySpeedToPid(proc.pid, cfg, g_state.speed, error)) {
+        setStatus(GetDlgItem(hwnd, kStatusLabelId), error);
+    }
+}
+
 bool selectProcessByPid(HWND hwnd, DWORD pid) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     if (!combo || pid == 0) return false;
@@ -163,12 +211,34 @@ bool selectProcessByPid(HWND hwnd, DWORD pid) {
                 if (listedPid == pid) {
                     SendMessageW(combo, CB_SETCURSEL, i, 0);
                     updateAutoHookCheckbox(hwnd);
+                    updateHookButtonState(hwnd);
                     return true;
                 }
             }
         }
     }
     return false;
+}
+
+LRESULT CALLBACK SpeedEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_KEYDOWN) {
+        if (wParam == VK_ESCAPE) {
+            wchar_t normalized[32] = {};
+            swprintf_s(normalized, L"%.2f", g_state.speed.lastValidSpeed);
+            SetWindowTextW(hwnd, normalized);
+            SetFocus(GetParent(hwnd));
+            return 0;
+        }
+        if (wParam == VK_RETURN) {
+            SetFocus(GetParent(hwnd));
+            return 0;
+        }
+    } else if (msg == WM_CHAR) {
+        if (wParam == VK_ESCAPE || wParam == VK_RETURN) {
+            return 0;
+        }
+    }
+    return CallWindowProcW(g_speedEditProc, hwnd, msg, wParam, lParam);
 }
 
 void initKnownPids() {
@@ -178,6 +248,19 @@ void initKnownPids() {
     for (const auto &proc : sessionProcesses) {
         g_knownPids.insert(proc.pid);
     }
+}
+
+bool pruneHookedPids(const std::unordered_set<DWORD> &current) {
+    bool removed = false;
+    for (auto it = g_hookedPids.begin(); it != g_hookedPids.end();) {
+        if (current.find(*it) == current.end()) {
+            it = g_hookedPids.erase(it);
+            removed = true;
+        } else {
+            ++it;
+        }
+    }
+    return removed;
 }
 
 void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConfig cfg) {
@@ -272,7 +355,13 @@ void pollAutoHook(HWND hwnd) {
         }
     }
 
-    if (removedInjected) {
+    const bool removedHooked = pruneHookedPids(current);
+    bool refreshed = false;
+    if (removedHooked) {
+        refreshProcessUi(hwnd, combo, statusLabel);
+        refreshed = true;
+    }
+    if (removedInjected && !refreshed) {
         refreshProcessUi(hwnd, combo, statusLabel);
     }
 
@@ -495,6 +584,8 @@ void handleApply(HWND hwnd) {
     }
 
     if (controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, error)) {
+        g_hookedPids.insert(proc.pid);
+        updateHookButtonState(hwnd);
         wchar_t message[160] = {};
         const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
         if (g_state.speed.enabled) {
@@ -529,6 +620,7 @@ void handleLaunch(HWND hwnd) {
     DWORD launchedPid = 0;
     std::wstring err;
     if (controller::launchAndInject(exePath, cfg, launchedPid, err)) {
+        g_hookedPids.insert(launchedPid);
         setStatus(statusLabel, L"Launched and injected: " + exePath.filename().wstring() +
                    L" (PID " + std::to_wstring(launchedPid) + L")");
     } else {
@@ -615,8 +707,7 @@ void layoutControls(HWND hwnd) {
             SetWindowPos(g_autoHookCheck, nullptr, autoHookCheckX, y, 20, checkboxHeight, SWP_NOZORDER);
         }
     }
-    SetWindowPos(GetDlgItem(hwnd, kApplyButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
-                 SWP_NOZORDER);
+    // Hook + Apply button removed; "Hook" button handles injection.
 
     y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, statusHeight, SWP_NOZORDER);
@@ -679,7 +770,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND combo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
                                      132, 10, initialWidth, 200, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProcessComboId)), nullptr, nullptr);
-        HWND refresh = CreateWindowExW(0, L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        HWND refresh = CreateWindowExW(0, L"BUTTON", L"Hook", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
         g_pathLabel = CreateWindowExW(0, L"STATIC", L"Game Path", WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
@@ -695,6 +786,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                          140, 66, 40, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
+        if (speedEdit && !g_speedEditProc) {
+            g_speedEditProc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrW(speedEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(SpeedEditProc)));
+        }
         HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                          140 + 40 + 12 + 90, 66, 20, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
         HWND ignoreBgmLabel = CreateWindowExW(0, L"STATIC", L"Process BGM", WS_CHILD | WS_VISIBLE,
@@ -710,8 +805,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (ignoreBgm) {
             SendMessageW(ignoreBgm, BM_SETCHECK, g_state.processAllAudio ? BST_CHECKED : BST_UNCHECKED, 0);
         }
-        HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                     0, 66, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
+        // Hook + Apply button removed; "Hook" button handles injection.
 
         CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
                         12, 96, 400, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
@@ -736,17 +830,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
         updateAutoHookCheckbox(hwnd);
+        updateHookButtonState(hwnd);
         initKnownPids();
         SetTimer(hwnd, kAutoHookTimerId, kAutoHookIntervalMs, nullptr);
         registerControllerHotkeys(hwnd, GetDlgItem(hwnd, kStatusLabelId));
 
         HWND tooltip = createTooltip(hwnd);
         addTooltip(tooltip, combo, L"Select the game process to inject");
-        addTooltip(tooltip, refresh, L"Refresh running processes (visible windows in this session)");
+        addTooltip(tooltip, refresh, L"Hook the selected process");
         addTooltip(tooltip, pathEdit, L"Full path to game executable; launch suspended, inject, then resume");
         addTooltip(tooltip, launch, L"Launch the game (suspended) and inject matching hook automatically");
         addTooltip(tooltip, speedEdit, L"Target speed (0.5-10.0x, recommended 0.75-2.0x)");
-        addTooltip(tooltip, apply, L"Inject DLL and apply speed + gating settings");
+        // Hook + Apply tooltip removed with button.
         // Tooltip removed for Process BGM for now.
 
         if (!g_initialOptions.launchPath.empty()) {
@@ -779,6 +874,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (bestIdx >= 0) {
                 SendMessageW(combo, CB_SETCURSEL, bestIdx, 0);
                 updateAutoHookCheckbox(hwnd);
+                updateHookButtonState(hwnd);
                 const auto &p = g_state.processes[static_cast<size_t>(bestIdx)];
                 std::wstring msg = L"Auto-selected [" + std::to_wstring(p.pid) + L"] " + p.name + L" via --search \"" + g_state.searchTerm + L"\"";
                 setStatus(statusLabel, msg);
@@ -798,9 +894,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_COMMAND: {
         const WORD id = LOWORD(wParam);
         if (id == kRefreshButtonId && HIWORD(wParam) == BN_CLICKED) {
-            refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
-            updateAutoHookCheckbox(hwnd);
-        } else if (id == kApplyButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleApply(hwnd);
         } else if (id == kLaunchButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleLaunch(hwnd);
@@ -808,10 +901,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             refreshProcessUi(hwnd, GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
         } else if (id == kProcessComboId && HIWORD(wParam) == CBN_SELCHANGE) {
             updateAutoHookCheckbox(hwnd);
+            updateHookButtonState(hwnd);
+        } else if (id == kSpeedEditId && HIWORD(wParam) == EN_KILLFOCUS) {
+            HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
+            if (editSpeed) {
+                readSpeedFromEdit(editSpeed);
+                writeSpeedEdit(hwnd);
+                applySettingsToSelectedIfHooked(hwnd);
+            }
+        } else if (id == kIgnoreBgmCheckId && HIWORD(wParam) == BN_CLICKED) {
+            syncProcessAllAudioFromCheckbox(hwnd);
+            applySettingsToSelectedIfHooked(hwnd);
         } else if (id == kAutoHookCheckId && HIWORD(wParam) == BN_CLICKED) {
             handleAutoHookToggle(hwnd);
         } else if (id == kLinkId && HIWORD(wParam) == STN_CLICKED) {
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN: {
+        HWND speedEdit = GetDlgItem(hwnd, kSpeedEditId);
+        if (speedEdit && GetFocus() == speedEdit) {
+            SetFocus(hwnd);
         }
         break;
     }
@@ -867,6 +979,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         DWORD pid = static_cast<DWORD>(wParam);
         g_pendingAutoSelectPid = pid;
         g_pendingAutoHookRefresh = true;
+        g_hookedPids.insert(pid);
         HWND combo = GetDlgItem(hwnd, kProcessComboId);
         if (combo) {
             refreshProcessUi(hwnd, combo, GetDlgItem(hwnd, kStatusLabelId));

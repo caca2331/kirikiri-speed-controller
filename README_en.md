@@ -21,14 +21,16 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
 
 ## Usage
 - Launch `KrkrSpeedController.exe`.
-- Click `Refresh`, pick the game from the dropdown, enter the target speed, then click `Hook + Apply`.
+- Pick the game from the dropdown, enter the target speed, then click `Hook`.
 - Global hotkeys:
   - `Alt + '`: toggle speed on/off.
   - `Alt + ]`: speed up 0.1x (if off, turns on and sets 1.1x).
   - `Alt + [`: speed down 0.1x (if off, turns on and sets 0.9x).
 - If AV blocks the binaries, add an exception or temporarily disable it.
 - If the target is protected/elevated, run the controller as Administrator.
-- If BGM keeps playing at normal speed, or you want BGM sped up too, check `Process BGM` and click `Hook + Apply`.
+- If BGM keeps playing at normal speed, or you want BGM sped up too, check `Process BGM`.
+- When already hooked, speed/`Process BGM` changes apply immediately; otherwise they apply on the next `Hook`.
+- Auto-inject: select a game from the dropdown and check `Auto-Hook This App`. The controller records it in `krkr_speed_config.yaml` (same directory as the controller). When the game is detected running, it auto-injects; unchecking removes it from the config.
 - See the Controller CLI options for advanced usage.
 - Please submit issues for unsupported games.
 
