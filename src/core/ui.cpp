@@ -697,49 +697,6 @@ void refreshProcessList(HWND combo, HWND statusLabel, bool quiet = false) {
     }
 }
 
-bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &error) {
-    const auto baseDir = controller::controllerDirectory();
-    const auto siblingX86 = baseDir.parent_path() / L"x86";
-    const auto siblingX64 = baseDir.parent_path() / L"x64";
-    if (baseDir.empty()) {
-        error = L"Unable to locate controller directory.";
-        return false;
-    }
-
-    std::vector<std::filesystem::path> candidates;
-    if (arch == ProcessArch::X86) {
-        candidates = {
-            baseDir / L"x86" / L"krkr_speed_hook.dll",
-            siblingX86 / L"krkr_speed_hook.dll",
-            baseDir / L"krkr_speed_hook32.dll",
-            baseDir / L"krkr_speed_hook_x86.dll",
-            baseDir / L"krkr_speed_hook.dll" // fallback
-        };
-    } else {
-        candidates = {
-            baseDir / L"x64" / L"krkr_speed_hook.dll",
-            siblingX64 / L"krkr_speed_hook.dll",
-            baseDir / L"krkr_speed_hook64.dll",
-            baseDir / L"krkr_speed_hook_x64.dll",
-            baseDir / L"krkr_speed_hook.dll" // fallback
-        };
-    }
-
-    for (const auto &candidate : candidates) {
-        if (!candidate.empty() && std::filesystem::exists(candidate)) {
-            outPath = std::filesystem::absolute(candidate).wstring();
-            return true;
-        }
-    }
-
-    if (arch == ProcessArch::X86) {
-        error = L"Matching hook DLL not found. Place x86/krkr_speed_hook.dll (or krkr_speed_hook32.dll) next to the controller.";
-    } else {
-        error = L"Matching hook DLL not found. Place x64/krkr_speed_hook.dll (or krkr_speed_hook64.dll) next to the controller.";
-    }
-    return false;
-}
-
 void handleApply(HWND hwnd) {
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
     HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);

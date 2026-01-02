@@ -79,11 +79,8 @@ private:
         float approxSeconds = 0.0f;
         bool isLikelyBgm = false;
         bool loggedFormat = false;
-        std::unique_ptr<DspPipeline> dsp;
         std::uint64_t unlockCount = 0;
         std::uint64_t processedFrames = 0;
-        DWORD currentFrequency = 0;
-        bool freqDirty = false;
         std::unique_ptr<AudioStreamProcessor> stream;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;

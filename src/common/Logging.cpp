@@ -102,7 +102,6 @@ std::filesystem::path moduleDirectory() {
 
 void pruneOldLogs(const std::filesystem::path &dir) {
     std::error_code ec;
-    if (ec) return;
     const std::vector<std::string> kKnownLogNames = {
         "krkr_speed.log",
         "krkr_controller.log",
