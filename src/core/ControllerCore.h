@@ -72,6 +72,9 @@ void loadAutoHookConfig();
 bool isAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t autoHookEntryCount();
+bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName);
+bool setProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
+std::size_t processBgmEntryCount();
 
 float clampSpeed(float speed);
 float roundSpeed(float speed);

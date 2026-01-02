@@ -136,6 +136,7 @@ std::vector<std::wstring> buildShortAndLongPaths(const std::filesystem::path &p)
 std::unordered_map<DWORD, HANDLE> g_sharedMappings;
 std::mutex g_sharedMutex;
 std::vector<AutoHookEntry> g_autoHookEntries;
+std::vector<AutoHookEntry> g_processBgmEntries;
 std::mutex g_autoHookMutex;
 
 constexpr wchar_t kAutoHookConfigName[] = L"krkr_speed_config.yaml";
@@ -224,6 +225,11 @@ bool saveAutoHookConfig(std::wstring &error) {
         out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
         out << "    path: \"" << escapeYamlString(entry.exePath) << "\"\n";
     }
+    out << "process_bgm:\n";
+    for (const auto &entry : g_processBgmEntries) {
+        out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
+        out << "    path: \"" << escapeYamlString(entry.exePath) << "\"\n";
+    }
     return true;
 }
 
@@ -253,6 +259,7 @@ std::wstring describeArch(ProcessArch arch) {
 void loadAutoHookConfig() {
     std::lock_guard<std::mutex> lock(g_autoHookMutex);
     g_autoHookEntries.clear();
+    g_processBgmEntries.clear();
     const auto path = autoHookConfigPath();
     if (path.empty() || !std::filesystem::exists(path)) {
         return;
@@ -266,14 +273,14 @@ void loadAutoHookConfig() {
     const std::string contents = buffer.str();
     std::istringstream lines(contents);
 
-    bool inList = false;
+    std::vector<AutoHookEntry> *activeList = nullptr;
     AutoHookEntry current{};
     bool hasName = false;
     bool hasPath = false;
 
     auto flush = [&]() {
-        if (hasName && hasPath) {
-            g_autoHookEntries.push_back(current);
+        if (activeList && hasName && hasPath) {
+            activeList->push_back(current);
         }
         current = AutoHookEntry{};
         hasName = false;
@@ -285,10 +292,16 @@ void loadAutoHookConfig() {
         std::string trimmed = trimCopy(line);
         if (trimmed.empty() || trimmed[0] == '#') continue;
         if (trimmed.rfind("auto_hook", 0) == 0) {
-            inList = true;
+            flush();
+            activeList = &g_autoHookEntries;
             continue;
         }
-        if (!inList) continue;
+        if (trimmed.rfind("process_bgm", 0) == 0) {
+            flush();
+            activeList = &g_processBgmEntries;
+            continue;
+        }
+        if (!activeList) continue;
         if (trimmed[0] == '-') {
             flush();
             trimmed = trimCopy(trimmed.substr(1));
@@ -340,6 +353,36 @@ bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName
 std::size_t autoHookEntryCount() {
     std::lock_guard<std::mutex> lock(g_autoHookMutex);
     return g_autoHookEntries.size();
+}
+
+bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName) {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    for (const auto &entry : g_processBgmEntries) {
+        if (matchAutoHookEntry(entry, exePath, exeName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool setProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error) {
+    if (exePath.empty() || exeName.empty()) {
+        error = L"Invalid exe path/name.";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    auto it = std::remove_if(g_processBgmEntries.begin(), g_processBgmEntries.end(),
+                             [&](const AutoHookEntry &entry) { return matchAutoHookEntry(entry, exePath, exeName); });
+    g_processBgmEntries.erase(it, g_processBgmEntries.end());
+    if (enabled) {
+        g_processBgmEntries.push_back(AutoHookEntry{exeName, exePath});
+    }
+    return saveAutoHookConfig(error);
+}
+
+std::size_t processBgmEntryCount() {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    return g_processBgmEntries.size();
 }
 
 float clampSpeed(float speed) {

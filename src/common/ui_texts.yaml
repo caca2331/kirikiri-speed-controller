@@ -30,7 +30,7 @@ zh-CN:
   label.speed: "速度 (0.5-2.3)"
   label.process_bgm: "变速BGM"
   label.auto_hook: "自动注入此应用"
-  label.hotkey: "Hotkey"
+  label.hotkey: "快捷键"
   link.markup: "<a href=\"https://github.com/caca2331/kirikiri-speed-control\">GitHub: kirikiri-speed-control</a>"
   link.plain: "GitHub: https://github.com/caca2331/kirikiri-speed-control"
   tooltip.process_combo: "选择要注入的游戏进程"

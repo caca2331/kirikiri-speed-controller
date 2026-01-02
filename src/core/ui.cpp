@@ -55,6 +55,7 @@ bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error);
 void refreshProcessList(HWND combo, HWND statusLabel, bool quiet);
 controller::SharedConfig buildSharedConfig(float speed);
 void updateAutoHookCheckbox(HWND hwnd);
+void updateProcessBgmCheckbox(HWND hwnd);
 void updateHookButtonState(HWND hwnd);
 bool pruneHookedPids(const std::unordered_set<DWORD> &current);
 void ensureUiTextLoaded();
@@ -62,11 +63,14 @@ void refreshUiText(HWND hwnd);
 void updateTooltips();
 void updateTrackedTooltip(const MSG &msg);
 TOOLINFOW makeToolInfo(HWND control, UiTextId textId);
+int getTextHeight(HWND hwnd, int fallback);
+HFONT createHotkeyFont(HWND reference);
 
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     if (!combo || !statusLabel) return;
     refreshProcessList(combo, statusLabel, true);
     updateAutoHookCheckbox(hwnd);
+    updateProcessBgmCheckbox(hwnd);
     const auto sessionProcesses = controller::enumerateSessionProcesses();
     std::unordered_set<DWORD> current;
     current.reserve(sessionProcesses.size());
@@ -109,6 +113,7 @@ static HWND g_tooltip = nullptr;
 static std::unordered_map<std::uintptr_t, UiTextId> g_tooltipById;
 static HWND g_mainWindow = nullptr;
 static HWND g_activeTooltipControl = nullptr;
+static HFONT g_hotkeyFont = nullptr;
 static std::unordered_set<DWORD> g_knownPids;
 static std::unordered_set<DWORD> g_autoHookAttempted;
 static std::unordered_set<DWORD> g_hookedPids;
@@ -228,6 +233,27 @@ void updateAutoHookCheckbox(HWND hwnd) {
     SendMessageW(g_autoHookCheck, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
+void updateProcessBgmCheckbox(HWND hwnd) {
+    HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);
+    if (!ignoreBgm) return;
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        SendMessageW(ignoreBgm, BM_SETCHECK, BST_UNCHECKED, 0);
+        g_state.processAllAudio = false;
+        return;
+    }
+    std::wstring exePath;
+    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+        SendMessageW(ignoreBgm, BM_SETCHECK, BST_UNCHECKED, 0);
+        g_state.processAllAudio = false;
+        return;
+    }
+    const bool enabled = controller::isProcessBgmEnabled(exePath, proc.name);
+    SendMessageW(ignoreBgm, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    g_state.processAllAudio = enabled;
+}
+
 void updateHookButtonState(HWND hwnd) {
     HWND hookButton = GetDlgItem(hwnd, kRefreshButtonId);
     if (!hookButton) return;
@@ -278,6 +304,7 @@ bool selectProcessByPid(HWND hwnd, DWORD pid) {
                 if (listedPid == pid) {
                     SendMessageW(combo, CB_SETCURSEL, i, 0);
                     updateAutoHookCheckbox(hwnd);
+                    updateProcessBgmCheckbox(hwnd);
                     updateHookButtonState(hwnd);
                     return true;
                 }
@@ -459,8 +486,10 @@ void pollAutoHook(HWND hwnd) {
         if (!controller::isAutoHookEnabled(exePath, proc.name)) {
             continue;
         }
+        controller::SharedConfig procCfg = cfg;
+        procCfg.processAllAudio = controller::isProcessBgmEnabled(exePath, proc.name);
         g_autoHookAttempted.insert(proc.pid);
-        scheduleAutoHook(hwnd, proc, cfg);
+        scheduleAutoHook(hwnd, proc, procCfg);
     }
 }
 
@@ -489,6 +518,31 @@ void handleAutoHookToggle(HWND hwnd) {
     if (controller::autoHookEntryCount() > 0) {
         initKnownPids();
     }
+}
+
+void handleProcessBgmToggle(HWND hwnd) {
+    HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);
+    if (!ignoreBgm) return;
+    HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    std::wstring exePath;
+    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    const bool checked = (SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    if (!controller::setProcessBgmEnabled(exePath, proc.name, checked, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    std::wstring msg = checked ? (L"Process BGM enabled for " + proc.name)
+                               : (L"Process BGM disabled for " + proc.name);
+    setStatus(statusLabel, msg);
 }
 
 controller::SharedConfig buildSharedConfig(float speed) {
@@ -779,26 +833,86 @@ void layoutControls(HWND hwnd) {
     y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, statusHeight, SWP_NOZORDER);
 
-    const int linkHeight = comboHeight + 4;
     const int linkPadding = 8;
     const int comboX = rc.right - buttonWidth - padding;
     const int comboY = rc.bottom - padding - comboHeight;
     const int hotkeyWidth = buttonWidth / 2;
     const int hotkeyX = comboX - linkPadding - hotkeyWidth;
-    const int bottomY = rc.bottom - padding - linkHeight;
     int linkWidth = hotkeyX - x - linkPadding;
     if (linkWidth < 0) linkWidth = 0;
 
+    int textHeight = 0;
     if (g_link) {
-        SetWindowPos(g_link, nullptr, x, bottomY, linkWidth, linkHeight, SWP_NOZORDER);
+        textHeight = std::max(textHeight, getTextHeight(g_link, comboHeight));
     }
     if (g_hotkeyLabel) {
-        SetWindowPos(g_hotkeyLabel, nullptr, hotkeyX, bottomY, hotkeyWidth, linkHeight, SWP_NOZORDER);
+        textHeight = std::max(textHeight, getTextHeight(g_hotkeyLabel, comboHeight));
+    }
+    if (textHeight <= 0) {
+        textHeight = comboHeight;
+    }
+    const int textBottomY = rc.bottom - padding - textHeight;
+
+    if (g_link) {
+        SetWindowPos(g_link, nullptr, x, textBottomY, linkWidth, textHeight, SWP_NOZORDER);
+    }
+    if (g_hotkeyLabel) {
+        SetWindowPos(g_hotkeyLabel, nullptr, hotkeyX, textBottomY, hotkeyWidth, textHeight, SWP_NOZORDER);
     }
     if (g_languageCombo) {
         const int dropHeight = comboHeight * 3; // selection + 2 items
         SetWindowPos(g_languageCombo, nullptr, comboX, comboY, buttonWidth, dropHeight, SWP_NOZORDER);
     }
+}
+
+int getTextHeight(HWND hwnd, int fallback) {
+    if (!hwnd) return fallback;
+    HDC hdc = GetDC(hwnd);
+    if (!hdc) return fallback;
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = nullptr;
+    if (font) {
+        oldFont = SelectObject(hdc, font);
+    }
+    TEXTMETRICW tm{};
+    int height = fallback;
+    if (GetTextMetricsW(hdc, &tm)) {
+        height = tm.tmHeight + tm.tmExternalLeading;
+    }
+    if (oldFont) {
+        SelectObject(hdc, oldFont);
+    }
+    ReleaseDC(hwnd, hdc);
+    return height;
+}
+
+HFONT createHotkeyFont(HWND reference) {
+    if (!reference) return nullptr;
+    HFONT baseFont = reinterpret_cast<HFONT>(SendMessageW(reference, WM_GETFONT, 0, 0));
+    if (!baseFont) {
+        baseFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+    LOGFONTW lf{};
+    if (baseFont && GetObjectW(baseFont, sizeof(lf), &lf) != 0) {
+        HDC hdc = GetDC(reference);
+        const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+        if (hdc) {
+            ReleaseDC(reference, hdc);
+        }
+        const int delta = MulDiv(2, dpi, 72);
+        int height = lf.lfHeight;
+        if (height == 0) {
+            height = -MulDiv(11, dpi, 72);
+        } else {
+            if (height < 0) height = -height;
+            height += delta;
+            height = -height;
+        }
+        lf.lfHeight = height;
+        lf.lfWeight = FW_BOLD;
+        return CreateFontIndirectW(&lf);
+    }
+    return nullptr;
 }
 
 HWND createTooltip(HWND parent) {
@@ -1041,12 +1155,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                         WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                         12, 124, 60, 24, hwnd, nullptr, nullptr, nullptr);
         if (g_hotkeyLabel) {
-            SendMessageW(g_hotkeyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+            if (g_hotkeyFont) {
+                DeleteObject(g_hotkeyFont);
+                g_hotkeyFont = nullptr;
+            }
+            g_hotkeyFont = createHotkeyFont(g_processLabel ? g_processLabel : g_hotkeyLabel);
+            HFONT labelFont = g_hotkeyFont;
+            if (!labelFont) {
+                labelFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            }
+            SendMessageW(g_hotkeyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
         }
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
         updateAutoHookCheckbox(hwnd);
+        updateProcessBgmCheckbox(hwnd);
         updateHookButtonState(hwnd);
         initKnownPids();
         SetTimer(hwnd, kAutoHookTimerId, kAutoHookIntervalMs, nullptr);
@@ -1100,6 +1224,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (bestIdx >= 0) {
                 SendMessageW(combo, CB_SETCURSEL, bestIdx, 0);
                 updateAutoHookCheckbox(hwnd);
+                updateProcessBgmCheckbox(hwnd);
                 updateHookButtonState(hwnd);
                 const auto &p = g_state.processes[static_cast<size_t>(bestIdx)];
                 std::wstring msg = L"Auto-selected [" + std::to_wstring(p.pid) + L"] " + p.name + L" via --search \"" + g_state.searchTerm + L"\"";
@@ -1127,6 +1252,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             refreshProcessUi(hwnd, GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
         } else if (id == kProcessComboId && HIWORD(wParam) == CBN_SELCHANGE) {
             updateAutoHookCheckbox(hwnd);
+            updateProcessBgmCheckbox(hwnd);
             updateHookButtonState(hwnd);
         } else if (id == kLanguageComboId && HIWORD(wParam) == CBN_SELCHANGE) {
             const int sel = static_cast<int>(SendMessageW(g_languageCombo, CB_GETCURSEL, 0, 0));
@@ -1145,6 +1271,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
         } else if (id == kIgnoreBgmCheckId && HIWORD(wParam) == BN_CLICKED) {
             syncProcessAllAudioFromCheckbox(hwnd);
+            handleProcessBgmToggle(hwnd);
             applySettingsToSelectedIfHooked(hwnd);
         } else if (id == kAutoHookCheckId && HIWORD(wParam) == BN_CLICKED) {
             handleAutoHookToggle(hwnd);
@@ -1239,6 +1366,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         UnregisterHotKey(hwnd, kHotkeySpeedDownId);
         g_activeTooltipControl = nullptr;
         g_mainWindow = nullptr;
+        if (g_hotkeyFont) {
+            DeleteObject(g_hotkeyFont);
+            g_hotkeyFont = nullptr;
+        }
         KRKR_LOG_INFO("KrkrSpeedController window destroyed, exiting.");
         PostQuitMessage(0);
         break;
