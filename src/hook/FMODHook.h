@@ -2,9 +2,6 @@
 
 #include <mutex>
 #include <unordered_map>
-#include <string>
-#include <memory>
-#include <vector>
 #include "../common/SharedSettings.h"
 #include "../common/DspPipeline.h"
 

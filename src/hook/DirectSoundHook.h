@@ -6,11 +6,10 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <chrono>
-#include "../common/DspPipeline.h"
 #include "../common/AudioStreamProcessor.h"
-#include "../common/VoiceContext.h"
 
 namespace krkrspeed {
 

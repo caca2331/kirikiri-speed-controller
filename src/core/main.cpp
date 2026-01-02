@@ -5,7 +5,6 @@
 #include <shellapi.h>
 #include <filesystem>
 #include <fstream>
-#include <vector>
 
 namespace {
 

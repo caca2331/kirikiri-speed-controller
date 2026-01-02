@@ -9,7 +9,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <cstdlib>
 #include <optional>
 
 #ifdef _WIN32
@@ -25,7 +24,6 @@ namespace {
 struct LoggerState {
     std::mutex mutex;
     std::ofstream stream;
-    std::string path;
     bool initialized = false;
     bool enabled = false;
     std::optional<std::filesystem::path> logDirOverride;
@@ -187,7 +185,6 @@ void ensureOpen(LoggerState &stateRef) {
 
     stateRef.stream.open(path, std::ios::out | std::ios::trunc);
     if (stateRef.stream.is_open()) {
-        stateRef.path = path.string();
         stateRef.stream << "----- log start " << currentTimestamp() << " (pid " << currentProcessId() << ") -----"
                         << std::endl;
     }

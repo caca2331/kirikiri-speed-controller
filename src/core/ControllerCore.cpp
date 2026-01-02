@@ -2,9 +2,6 @@
 #include "../common/SharedSettings.h"
 #include "../common/Logging.h"
 #include <TlHelp32.h>
-#include <Psapi.h>
-#include <shellapi.h>
-#include <system_error>
 #include <fstream>
 #include <algorithm>
 #include <unordered_map>

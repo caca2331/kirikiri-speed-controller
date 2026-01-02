@@ -37,7 +37,7 @@ constexpr int kLanguageComboId = 1013;
 constexpr int kAutoHookDelayCheckId = 1014;
 constexpr int kAutoHookDelayLabelId = 1015;
 constexpr UINT kAutoHookTimerId = 3001;
-constexpr UINT kAutoHookIntervalMs = 1000;
+constexpr UINT kAutoHookIntervalMs = 2000;
 constexpr UINT kMsgAutoSelectPid = WM_APP + 2;
 constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
 constexpr int kHotkeyToggleSpeedId = 2001;
@@ -443,6 +443,73 @@ void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConf
     }).detach();
 }
 
+void scheduleAutoHooksForProcesses(HWND hwnd, const std::vector<ProcessInfo> &processes, bool updateUi) {
+    if (processes.empty() || controller::autoHookEntryCount() == 0) {
+        return;
+    }
+
+    HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
+    if (editSpeed) {
+        readSpeedFromEdit(editSpeed);
+    }
+    syncProcessAllAudioFromCheckbox(hwnd);
+    const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
+    controller::SharedConfig cfg = buildSharedConfig(effectiveSpeed);
+
+    std::unordered_set<std::wstring> autoHookNames;
+    {
+        const auto names = controller::autoHookExeNames();
+        autoHookNames.reserve(names.size());
+        for (const auto &name : names) {
+            autoHookNames.insert(toLowerCopy(name));
+        }
+    }
+
+    HWND combo = nullptr;
+    HWND statusLabel = nullptr;
+    bool refreshedUi = false;
+    if (updateUi) {
+        combo = GetDlgItem(hwnd, kProcessComboId);
+        statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    }
+
+    for (const auto &proc : processes) {
+        if (g_autoHookAttempted.find(proc.pid) != g_autoHookAttempted.end()) continue;
+        if (!autoHookNames.empty()) {
+            const std::wstring nameLower = toLowerCopy(proc.name);
+            if (autoHookNames.find(nameLower) == autoHookNames.end()) {
+                continue;
+            }
+        }
+        std::wstring exePath;
+        std::wstring error;
+        if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+            continue;
+        }
+        if (!controller::isAutoHookEnabled(exePath, proc.name)) {
+            continue;
+        }
+        controller::SharedConfig procCfg = cfg;
+        procCfg.processAllAudio = controller::isProcessBgmEnabled(exePath, proc.name);
+        double delaySeconds = 0.0;
+        controller::tryGetAutoHookDelay(exePath, proc.name, delaySeconds);
+        g_autoHookAttempted.insert(proc.pid);
+
+        if (updateUi && combo && statusLabel) {
+            if (!refreshedUi) {
+                refreshProcessUi(hwnd, combo, statusLabel);
+                refreshedUi = true;
+            }
+            if (!selectProcessByPid(hwnd, proc.pid)) {
+                g_pendingAutoSelectPid = proc.pid;
+                g_pendingAutoHookRefresh = true;
+            }
+        }
+
+        scheduleAutoHook(hwnd, proc, procCfg, delaySeconds);
+    }
+}
+
 void pollAutoHook(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
@@ -509,47 +576,7 @@ void pollAutoHook(HWND hwnd) {
     g_knownPids = std::move(current);
 
     if (newProcesses.empty()) return;
-
-    HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
-    if (editSpeed) {
-        readSpeedFromEdit(editSpeed);
-    }
-    syncProcessAllAudioFromCheckbox(hwnd);
-    const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
-    controller::SharedConfig cfg = buildSharedConfig(effectiveSpeed);
-
-    std::unordered_set<std::wstring> autoHookNames;
-    {
-        const auto names = controller::autoHookExeNames();
-        autoHookNames.reserve(names.size());
-        for (const auto &name : names) {
-            autoHookNames.insert(toLowerCopy(name));
-        }
-    }
-
-    for (const auto &proc : newProcesses) {
-        if (g_autoHookAttempted.find(proc.pid) != g_autoHookAttempted.end()) continue;
-        if (!autoHookNames.empty()) {
-            const std::wstring nameLower = toLowerCopy(proc.name);
-            if (autoHookNames.find(nameLower) == autoHookNames.end()) {
-                continue;
-            }
-        }
-        std::wstring exePath;
-        std::wstring error;
-        if (!controller::getProcessExePath(proc.pid, exePath, error)) {
-            continue;
-        }
-        if (!controller::isAutoHookEnabled(exePath, proc.name)) {
-            continue;
-        }
-        controller::SharedConfig procCfg = cfg;
-        procCfg.processAllAudio = controller::isProcessBgmEnabled(exePath, proc.name);
-        double delaySeconds = 0.0;
-        controller::tryGetAutoHookDelay(exePath, proc.name, delaySeconds);
-        g_autoHookAttempted.insert(proc.pid);
-        scheduleAutoHook(hwnd, proc, procCfg, delaySeconds);
-    }
+    scheduleAutoHooksForProcesses(hwnd, newProcesses, true);
 }
 
 void handleAutoHookToggle(HWND hwnd) {
@@ -1226,6 +1253,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         updateProcessBgmCheckbox(hwnd);
         updateHookButtonState(hwnd);
         initKnownPids();
+        scheduleAutoHooksForProcesses(hwnd, controller::enumerateSessionProcesses(), true);
         SetTimer(hwnd, kAutoHookTimerId, kAutoHookIntervalMs, nullptr);
         registerControllerHotkeys(hwnd, GetDlgItem(hwnd, kStatusLabelId));
 
@@ -1279,12 +1307,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const auto &p = g_state.processes[static_cast<size_t>(bestIdx)];
                 std::wstring msg = L"Auto-selected [" + std::to_wstring(p.pid) + L"] " + p.name + L" via --search \"" + g_state.searchTerm + L"\"";
                 setStatus(statusLabel, msg);
-                KRKR_LOG_INFO(std::string("Auto search hit: ") + std::string(p.name.begin(), p.name.end()));
+                KRKR_LOG_INFO(L"Auto search hit: " + p.name);
                 handleApply(hwnd);
             } else {
                 std::wstring msg = L"--search \"" + g_state.searchTerm + L"\": no process matched; waiting for manual selection.";
                 setStatus(statusLabel, msg);
-                KRKR_LOG_INFO(std::string("Search term not found: ") + std::string(g_state.searchTerm.begin(), g_state.searchTerm.end()));
+                KRKR_LOG_INFO(L"Search term not found: " + g_state.searchTerm);
             }
         }
         break;
@@ -1382,7 +1410,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         writeSpeedEdit(hwnd);
         setStatus(statusLabel, status);
         return 0;
-        break;
     }
     case kMsgRefreshQuiet: {
         refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId), true);
