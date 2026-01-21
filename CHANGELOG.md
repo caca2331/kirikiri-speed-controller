@@ -1,3 +1,17 @@
+## [1.2.1] - 2026-01-12
+### Added
+- "Minimize to tray on close" option with tray icon and Exit menu
+- Info label with version tooltip and localized warning text
+- Second-instance behavior now restores and focuses the existing window (including tray/minimized)
+- Added app icon
+- Status box now logs detected audio backend (DirectSound/WASAPI) once per hooked game
+### Changed
+- Checkbox labels and main labels are right-aligned with tighter spacing
+- Auto-hook delay controls now stay visible and are disabled when auto-hook is off
+- Added a new row under the status box for the tray option and tweaked label widths/spacing
+### Fixed
+- Controller background no longer turns black after minimize/restore
+
 ## [1.2.0] - 2026-01-03
 ### Added
 - WASAPI hook with tempo-based speedup path (Unity titles supported)

@@ -2,7 +2,7 @@
 [中文](README.md) | [日本語](README_ja.md)
 
 This repository provides a Windows controller that adjusts voice playback speed for games.
-- For DirectSound titles (e.g., many Kirikiri engine games):
+- For DirectSound titles (e.g., Kirikiri engine games):
   - Speed range is roughly 0.5x–~2.3x
   - Usually voice can be sped up without affecting BGM.
 - For games that call WASAPI directly (e.g., most Unity titles):
@@ -23,7 +23,7 @@ dist/
     x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
     x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-The x86 controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the arch subfolder.
+The controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the arch subfolder.
 
 ## Usage
 ### Basic
@@ -40,7 +40,9 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
   - `Alt + [`: speed down 0.1x (if off, turns on and sets 0.9x).
 - If voices fail to speed up, or you want BGM sped up too, check `Process BGM`.
 - Auto-inject: select a game from the dropdown and check `Auto-Hook This App`. When the game is detected running, it auto-injects; unchecking removes it from the config.
+- Keep the controller running in the background; after the first injection, enable auto-hook so future launches are injected and sped up automatically.
 - Edit `process_blacklist.txt` beside the controller to hide processes from the process selection dropdown.
+- Can be used together with Cheat Engine speed hacks.
 
 ### Controller CLI options
 - `--log` : enable logging for controller + hook.
@@ -50,9 +52,8 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
 - `--launch <path>` / `-l <path>` : start a game suspended, inject automatically, then resume.
 - `--search <name>` : on startup, find visible processes whose name contains this substring; if multiple match, pick the one with the shortest name and auto-inject. If none match, the controller starts normally and waits for manual selection.
 
-## Other
+## Others
 - Most of this repository was generated under supervision with AI assistance.
-- Can be used together with Cheat Engine speed hacks.
 - (For AI Agent: read AGENTS.md if not yet)
 
 ## Next Step
@@ -60,3 +61,6 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
 
 ## License
 MIT. Include the copyright and license notice when redistributing (see LICENSE).
+
+## Stargazers over time
+[![Stargazers over time](https://starchart.cc/caca2331/kirikiri-speed-controller.svg?variant=adaptive)](https://starchart.cc/caca2331/kirikiri-speed-controller)

@@ -138,6 +138,7 @@ if(WIN32)
             src/core/main.cpp
             src/core/ui.cpp
             src/core/ControllerCore.cpp
+            src/core/krkr_speed_controller.rc
         )
         target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32 uuid)
         copy_soundtouch_runtime(KrkrSpeedController)

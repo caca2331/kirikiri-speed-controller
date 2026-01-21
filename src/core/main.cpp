@@ -78,6 +78,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     if (instanceMutex) {
         const DWORD mutexErr = GetLastError();
         if (mutexErr == ERROR_ALREADY_EXISTS || mutexErr == ERROR_ACCESS_DENIED) {
+            const UINT msgRestore = RegisterWindowMessageW(L"KrkrSpeedController_Restore");
+            HWND existing = FindWindowW(krkrspeed::ui::kControllerWindowClass, nullptr);
+            if (existing && msgRestore != 0) {
+                PostMessageW(existing, msgRestore, 0, 0);
+                SetForegroundWindow(existing);
+            }
             CloseHandle(instanceMutex);
             return 0;
         }

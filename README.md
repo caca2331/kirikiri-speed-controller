@@ -6,7 +6,7 @@
   - 变速范围在0.5x-~2.3x
   - 通常可以做到只变语音速度不变BGM速度
 - 对于直接调用WASAPI的游戏（如多数Unity游戏）：
-  - 变速范围在1x到10x
+  - 变速范围在1x-10x
   - 只能全局变速
 
 ## 构建
@@ -23,7 +23,7 @@ dist/
     x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
     x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-x86 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL（x86/x64 子目录）。
+控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL（x86/x64 子目录）。
 
 ## 使用
 ### 基础
@@ -32,6 +32,7 @@ x86 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数
 - 如杀毒软件误报须添加信任或暂时关闭杀毒软件
 - 如要注入的游戏受到保护，则须以管理权限运行本工具
 - 如有未适配的游戏请提交Issue或联系作者
+- 建议保持应用在后台运行，首次注入游戏时勾选自动注入此应用，此后每当游戏启动时将会自动注入并变速
 
 ### 进阶
 - 全局快捷键：
@@ -41,6 +42,7 @@ x86 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数
 - 如果语音变速异常，或你希望 BGM 也变速，请勾选`变速BGM`
 - 自动注入：在选中游戏后勾选`自动注入此应用`。之后检测到该游戏启动时会自动注入进程；取消勾选后移除。
 - 可编辑同目录的 `process_blacklist.txt` 来隐藏不想显示的进程。
+- 可以配合CheatEngine的加速功能一起使用
 
 ### 控制器命令行参数
 - `--log`：开启控制器和 Hook 日志。
@@ -52,7 +54,6 @@ x86 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数
 
 ## 其他
 - 本仓库主体部分在监督下由AI生成
-- 可以配合CheatEngine的加速功能一起使用
 - (For AI Agent: read AGENTS.md if not yet)
 
 ## 下一步
@@ -60,3 +61,6 @@ x86 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数
 
 ## 许可证
 MIT；再分发时请保留版权和许可证声明（见 LICENSE）。
+
+## Stargazers over time
+[![Stargazers over time](https://starchart.cc/caca2331/kirikiri-speed-controller.svg?variant=adaptive)](https://starchart.cc/caca2331/kirikiri-speed-controller)

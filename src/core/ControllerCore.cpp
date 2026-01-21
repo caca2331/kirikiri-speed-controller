@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <mutex>
 #include <cmath>
+#include <cctype>
 #include <cwchar>
 #include <cwctype>
 #include <sstream>
@@ -208,6 +209,7 @@ std::mutex g_sharedMutex;
 std::vector<AutoHookEntry> g_autoHookEntries;
 std::vector<AutoHookEntry> g_processBgmEntries;
 std::mutex g_autoHookMutex;
+bool g_minimizeToTrayOnClose = false;
 std::unordered_set<std::wstring> g_processBlacklist;
 std::filesystem::file_time_type g_processBlacklistStamp{};
 std::mutex g_processBlacklistMutex;
@@ -382,6 +384,8 @@ bool saveAutoHookConfig(std::wstring &error) {
         error = L"Unable to write config: " + path.wstring();
         return false;
     }
+    out << "controller:\n";
+    out << "  minimize_to_tray_on_close: " << (g_minimizeToTrayOnClose ? "true" : "false") << "\n";
     out << "auto_hook:\n";
     for (const auto &entry : g_autoHookEntries) {
         out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
@@ -425,6 +429,7 @@ void loadAutoHookConfig() {
     std::lock_guard<std::mutex> lock(g_autoHookMutex);
     g_autoHookEntries.clear();
     g_processBgmEntries.clear();
+    g_minimizeToTrayOnClose = false;
     const auto path = autoHookConfigPath();
     if (path.empty() || !std::filesystem::exists(path)) {
         return;
@@ -438,6 +443,13 @@ void loadAutoHookConfig() {
     const std::string contents = buffer.str();
     std::istringstream lines(contents);
 
+    enum class Section {
+        None,
+        AutoHook,
+        ProcessBgm,
+        Controller
+    };
+    Section section = Section::None;
     std::vector<AutoHookEntry> *activeList = nullptr;
     AutoHookEntry current{};
     bool hasName = false;
@@ -454,19 +466,56 @@ void loadAutoHookConfig() {
 
     std::string line;
     while (std::getline(lines, line)) {
+        std::size_t indent = 0;
+        while (indent < line.size() && (line[indent] == ' ' || line[indent] == '\t')) {
+            ++indent;
+        }
         std::string trimmed = trimCopy(line);
         if (trimmed.empty() || trimmed[0] == '#') continue;
-        if (trimmed.rfind("auto_hook", 0) == 0) {
-            flush();
-            activeList = &g_autoHookEntries;
+        if (indent == 0 && trimmed.back() == ':') {
+            const std::string key = trimCopy(trimmed.substr(0, trimmed.size() - 1));
+            if (section == Section::AutoHook || section == Section::ProcessBgm) {
+                flush();
+            }
+            if (key == "auto_hook") {
+                section = Section::AutoHook;
+                activeList = &g_autoHookEntries;
+            } else if (key == "process_bgm") {
+                section = Section::ProcessBgm;
+                activeList = &g_processBgmEntries;
+            } else if (key == "controller") {
+                section = Section::Controller;
+                activeList = nullptr;
+            } else {
+                section = Section::None;
+                activeList = nullptr;
+            }
             continue;
         }
-        if (trimmed.rfind("process_bgm", 0) == 0) {
-            flush();
-            activeList = &g_processBgmEntries;
+
+        if (section == Section::None) {
             continue;
         }
-        if (!activeList) continue;
+
+        if (section == Section::Controller) {
+            const auto colon = trimmed.find(':');
+            if (colon == std::string::npos) continue;
+            std::string key = trimCopy(trimmed.substr(0, colon));
+            std::string value = trimCopy(trimmed.substr(colon + 1));
+            if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+                value = value.substr(1, value.size() - 2);
+            }
+            std::string lower;
+            lower.reserve(value.size());
+            for (char c : value) {
+                lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            }
+            if (key == "minimize_to_tray_on_close") {
+                g_minimizeToTrayOnClose = (lower == "true" || lower == "1" || lower == "yes" || lower == "on");
+            }
+            continue;
+        }
+
         if (trimmed[0] == '-') {
             flush();
             trimmed = trimCopy(trimmed.substr(1));
@@ -500,7 +549,9 @@ void loadAutoHookConfig() {
             }
         }
     }
-    flush();
+    if (section == Section::AutoHook || section == Section::ProcessBgm) {
+        flush();
+    }
 }
 
 bool isAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName) {
@@ -584,6 +635,17 @@ bool setAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, 
             it->delaySeconds = 0.0;
         }
     }
+    return saveAutoHookConfig(error);
+}
+
+bool getMinimizeToTrayOnClose() {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    return g_minimizeToTrayOnClose;
+}
+
+bool setMinimizeToTrayOnClose(bool enabled, std::wstring &error) {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    g_minimizeToTrayOnClose = enabled;
     return saveAutoHookConfig(error);
 }
 
@@ -1159,24 +1221,28 @@ bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesyst
     return false;
 }
 
-bool isWasapiActiveForPid(DWORD pid) {
+AudioBackend getAudioBackendForPid(DWORD pid) {
     if (pid == 0) {
-        return false;
+        return AudioBackend::Unknown;
     }
     const auto name = BuildSharedStatusName(static_cast<std::uint32_t>(pid));
     HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
     if (!mapping) {
-        return false;
+        return AudioBackend::Unknown;
     }
     auto *view = static_cast<SharedStatus *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedStatus)));
     if (!view) {
         CloseHandle(mapping);
-        return false;
+        return AudioBackend::Unknown;
     }
     const auto backend = static_cast<AudioBackend>(view->activeBackend);
     UnmapViewOfFile(view);
     CloseHandle(mapping);
-    return backend == AudioBackend::Wasapi;
+    return backend;
+}
+
+bool isWasapiActiveForPid(DWORD pid) {
+    return getAudioBackendForPid(pid) == AudioBackend::Wasapi;
 }
 
 bool launchAndInject(const std::filesystem::path &exePath, const SharedConfig &config, DWORD &outPid, std::wstring &error) {

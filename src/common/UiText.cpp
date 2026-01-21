@@ -39,8 +39,11 @@ const KeyEntry kEntries[] = {
     {UiTextId::LabelAutoHook, "label.auto_hook", L""},
     {UiTextId::LabelAutoHookDelay, "label.auto_hook_delay", L""},
     {UiTextId::LabelHotkey, "label.hotkey", L""},
+    {UiTextId::LabelInfo, "label.info", L""},
+    {UiTextId::LabelMinimizeToTray, "label.minimize_to_tray", L""},
     {UiTextId::LinkMarkup, "link.markup", L""},
     {UiTextId::LinkPlain, "link.plain", L""},
+    {UiTextId::MenuExit, "menu.exit", L""},
     {UiTextId::TooltipProcessCombo, "tooltip.process_combo", L""},
     {UiTextId::TooltipHookButton, "tooltip.hook_button", L""},
     {UiTextId::TooltipSpeedEdit, "tooltip.speed_edit", L""},
@@ -49,7 +52,8 @@ const KeyEntry kEntries[] = {
     {UiTextId::TooltipProcessBgmWasapi, "tooltip.process_bgm_wasapi", L""},
     {UiTextId::TooltipAutoHook, "tooltip.auto_hook", L""},
     {UiTextId::TooltipAutoHookDelay, "tooltip.auto_hook_delay", L""},
-    {UiTextId::TooltipHotkey, "tooltip.hotkey", L""}
+    {UiTextId::TooltipHotkey, "tooltip.hotkey", L""},
+    {UiTextId::TooltipInfo, "tooltip.info", L""}
 };
 
 std::unordered_map<std::wstring, UiTextPack> g_packs;

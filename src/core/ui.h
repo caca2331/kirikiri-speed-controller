@@ -5,6 +5,8 @@
 
 namespace krkrspeed::ui {
 
+inline constexpr wchar_t kControllerWindowClass[] = L"KrkrSpeedControllerWindow";
+
 // Starts the controller UI message loop. Returns the process exit code.
 int runController(HINSTANCE hInstance, int nCmdShow);
 

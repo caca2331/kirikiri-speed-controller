@@ -15,8 +15,11 @@ enum class UiTextId {
     LabelAutoHook,
     LabelAutoHookDelay,
     LabelHotkey,
+    LabelInfo,
+    LabelMinimizeToTray,
     LinkMarkup,
     LinkPlain,
+    MenuExit,
     TooltipProcessCombo,
     TooltipHookButton,
     TooltipSpeedEdit,
@@ -25,7 +28,8 @@ enum class UiTextId {
     TooltipProcessBgmWasapi,
     TooltipAutoHook,
     TooltipAutoHookDelay,
-    TooltipHotkey
+    TooltipHotkey,
+    TooltipInfo
 };
 
 bool LoadUiTextPacks(const std::filesystem::path &path, std::wstring &error);

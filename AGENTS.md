@@ -16,6 +16,7 @@ draft.md is for my own purpose. ignore it.
 - Log essential information, and use them for debugging.
 - Notify me in your next response when you did a context window length compress.
 - Unless you have to, prevent small and frequent patches, to reduce the amount of work of mine testing.
+- When editing existing file, preserve the existing coding style.
 - Make source files concise and organized. Try keep each file below 1000 lines, or by best below 500 lines.
 - Put instructions in this file in high priority. Keep them in your context window.
 

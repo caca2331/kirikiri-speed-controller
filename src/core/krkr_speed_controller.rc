@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDI_APP_ICON ICON "../../asset/ksc-v1.ico"

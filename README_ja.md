@@ -2,7 +2,7 @@
 [English](README_en.md) | [中文](README.md)
 
 本リポジトリは Windows ゲーム向けの音声再生速度コントローラーを提供します。
-- DirectSound を使うゲーム（例: Kirikiri エンジンの多くの作品）:
+- DirectSound を使うゲーム（例: Kirikiri エンジンの作品）:
   - 変速範囲は 0.5x〜約 2.3x
   - 通常は BGM を変えずに音声のみ変速できます
 - WASAPI を直接呼ぶゲーム（例: 多くの Unity タイトル）:
@@ -23,7 +23,7 @@ dist/
     x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
     x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-x86 コントローラーは x86 と x64 のゲームの両方に注入できます。対象プロセスに合わせて injector を選び、対応する Hook DLL（x86/x64 のサブフォルダ）を使用します。
+コントローラーは x86 と x64 のゲームの両方に注入できます。対象プロセスに合わせて injector を選び、対応する Hook DLL（x86/x64 のサブフォルダ）を使用します。
 
 ## 使い方
 ### 基本
@@ -40,7 +40,9 @@ x86 コントローラーは x86 と x64 のゲームの両方に注入できま
   - `Alt + [`：0.1x ずつ減速（OFF の場合は 0.9x で ON）
 - 音声変速がうまくいかない場合、または BGM も変速したい場合は `Process BGM` をチェックしてください。
 - 自動注入：ゲームを選択して `Auto-Hook This App` にチェックを入れると、起動検知時に自動注入します。解除で設定を削除します。
+- コントローラーはバックグラウンドで動かしたままにし、初回注入後に自動注入を有効化すると、以後の起動時に自動で注入・変速されます。
 - コントローラーと同じフォルダの `process_blacklist.txt` を編集すると、ドロップダウンから隠したいプロセスを指定できます。
+- Cheat Engine の速度変更と併用できます。
 
 ### コントローラーの CLI オプション
 - `--log`：コントローラーと Hook のログを有効化。
@@ -52,7 +54,6 @@ x86 コントローラーは x86 と x64 のゲームの両方に注入できま
 
 ## その他
 - 本リポジトリの大部分は AI 支援のもとで生成されています。
-- Cheat Engine の速度変更と併用できます。
 - (AI エージェント向け: 未読なら AGENTS.md を読むこと)
 
 ## 次の予定
@@ -60,3 +61,6 @@ x86 コントローラーは x86 と x64 のゲームの両方に注入できま
 
 ## ライセンス
 MIT。再配布時は著作権とライセンス表記を保持してください（LICENSE 参照）。
+
+## Stargazers over time
+[![Stargazers over time](https://starchart.cc/caca2331/kirikiri-speed-controller.svg?variant=adaptive)](https://starchart.cc/caca2331/kirikiri-speed-controller)

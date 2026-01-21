@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "../common/SharedStatus.h"
+
 namespace krkrspeed::controller {
 
 enum class ProcessArch { Unknown, X86, X64, Arm64 };
@@ -61,6 +63,7 @@ bool getDllArch(const std::filesystem::path &path, ProcessArch &archOut, std::ws
 bool selectHookForArch(const std::filesystem::path &controllerDir, ProcessArch targetArch, std::filesystem::path &outPath,
                        std::wstring &error);
 bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstring &error);
+AudioBackend getAudioBackendForPid(DWORD pid);
 bool isWasapiActiveForPid(DWORD pid);
 bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesystem::path &dllPath, std::wstring &error);
 bool launchAndInject(const std::filesystem::path &exePath, const SharedConfig &config, DWORD &outPid, std::wstring &error);
@@ -74,6 +77,8 @@ std::vector<std::wstring> autoHookExeNames();
 bool tryGetAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, double &outDelaySeconds);
 bool setAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, bool enabled, double delaySeconds,
                       std::wstring &error);
+bool getMinimizeToTrayOnClose();
+bool setMinimizeToTrayOnClose(bool enabled, std::wstring &error);
 bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t processBgmEntryCount();

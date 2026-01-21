@@ -4,14 +4,18 @@
 
 #include "ui.h"
 #include "ControllerCore.h"
+#include "resource.h"
 
 #include "../common/Logging.h"
+#include "../common/SharedStatus.h"
 #include "../common/UiText.h"
 #include <Windows.h>
 #include <CommCtrl.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <cwchar>
 #include <cwctype>
+#include <cstring>
 #include <filesystem>
 #include <chrono>
 #include <thread>
@@ -36,16 +40,22 @@ constexpr int kAutoHookLabelId = 1012;
 constexpr int kLanguageComboId = 1013;
 constexpr int kAutoHookDelayCheckId = 1014;
 constexpr int kAutoHookDelayLabelId = 1015;
+constexpr int kMinimizeToTrayCheckId = 1016;
+constexpr int kMinimizeToTrayLabelId = 1017;
 constexpr UINT kAutoHookTimerId = 3001;
 constexpr UINT kAutoHookIntervalMs = 3000;
 constexpr UINT kMsgAutoSelectPid = WM_APP + 2;
 constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
 constexpr UINT kMsgStatusUpdate = WM_APP + 3;
+constexpr UINT kTrayCallbackMsg = WM_APP + 4;
 constexpr std::size_t kStatusMaxChars = 128 * 1024 / sizeof(wchar_t);
 constexpr int kHotkeyToggleSpeedId = 2001;
 constexpr int kHotkeySpeedUpId = 2002;
 constexpr int kHotkeySpeedDownId = 2003;
 constexpr UINT kHotkeyModifiers = MOD_ALT;
+constexpr UINT kTrayMenuExitId = 4001;
+const UINT kMsgRestoreWindow = RegisterWindowMessageW(L"KrkrSpeedController_Restore");
+const std::wstring kAppVersion = L"1.2.1";
 
 using controller::ProcessArch;
 using controller::ProcessInfo;
@@ -61,6 +71,7 @@ controller::SharedConfig buildSharedConfig(float speed);
 void updateAutoHookCheckbox(HWND hwnd);
 void updateProcessBgmCheckbox(HWND hwnd);
 void updateAutoHookDelayControls(HWND hwnd);
+void updateMinimizeToTrayControls(HWND hwnd);
 void updateHookButtonState(HWND hwnd);
 bool pruneHookedPids(const std::unordered_set<DWORD> &current, std::vector<RemovedHookInfo> *removed = nullptr);
 void ensureUiTextLoaded();
@@ -68,11 +79,19 @@ void refreshUiText(HWND hwnd);
 void updateTooltips();
 void updateTrackedTooltip(const MSG &msg);
 TOOLINFOW makeToolInfo(HWND control, UiTextId textId);
+const std::wstring &resolveTooltipText(UiTextId id);
 bool setTooltipId(HWND control, UiTextId textId);
 void scrollStatusToBottom(HWND statusLabel);
 int getTextHeight(HWND hwnd, int fallback);
 HFONT createHotkeyFont(HWND reference);
 void handleAutoHookDelayToggle(HWND hwnd);
+void toggleCheckboxFromLabel(HWND hwnd, int checkId);
+void handleMinimizeToTrayToggle(HWND hwnd);
+void showTrayIcon(HWND hwnd);
+void hideTrayIcon();
+void restoreFromTray(HWND hwnd);
+void showTrayMenu(HWND hwnd);
+void logBackendForPid(HWND statusLabel, DWORD pid);
 
 std::wstring toLowerCopy(const std::wstring &input) {
     std::wstring out;
@@ -115,6 +134,7 @@ void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     refreshProcessList(combo, statusLabel, true);
     updateAutoHookCheckbox(hwnd);
     updateProcessBgmCheckbox(hwnd);
+    updateMinimizeToTrayControls(hwnd);
     const auto sessionProcesses = controller::enumerateSessionProcesses();
     std::unordered_set<DWORD> current;
     current.reserve(sessionProcesses.size());
@@ -131,6 +151,7 @@ struct AppState {
     std::filesystem::path launchPath;
     bool enableLog = false;
     bool processAllAudio = false;
+    bool minimizeToTrayOnClose = false;
     float bgmSeconds = 60.0f; // also used as length gate seconds
     std::uint32_t stereoBgmMode = 1;
     std::wstring searchTerm;
@@ -154,6 +175,9 @@ static HWND g_autoHookDelayLabel = nullptr;
 static HWND g_ignoreBgmLabel = nullptr;
 static HWND g_languageCombo = nullptr;
 static HWND g_hotkeyLabel = nullptr;
+static HWND g_infoLabel = nullptr;
+static HWND g_minimizeToTrayCheck = nullptr;
+static HWND g_minimizeToTrayLabel = nullptr;
 static HWND g_tooltip = nullptr;
 static std::unordered_map<std::uintptr_t, UiTextId> g_tooltipById;
 static HWND g_mainWindow = nullptr;
@@ -163,8 +187,12 @@ static std::unordered_set<DWORD> g_knownPids;
 static std::unordered_set<DWORD> g_autoHookAttempted;
 static std::unordered_set<DWORD> g_hookedPids;
 static std::unordered_map<DWORD, std::wstring> g_hookedPidNames;
+static std::unordered_map<DWORD, AudioBackend> g_loggedBackends;
 static DWORD g_pendingAutoSelectPid = 0;
 static bool g_pendingAutoHookRefresh = false;
+static bool g_trayIconVisible = false;
+static bool g_allowClose = false;
+static NOTIFYICONDATAW g_trayIcon{};
 static WNDPROC g_speedEditProc = nullptr;
 static std::wstring g_statusBuffer;
 
@@ -194,6 +222,45 @@ void scrollStatusToBottom(HWND statusLabel) {
     SendMessageW(statusLabel, EM_SETSEL, length, length);
     SendMessageW(statusLabel, EM_SCROLLCARET, 0, 0);
     SendMessageW(statusLabel, WM_VSCROLL, SB_BOTTOM, 0);
+}
+
+void toggleCheckboxFromLabel(HWND hwnd, int checkId) {
+    if (!hwnd) return;
+    HWND check = GetDlgItem(hwnd, checkId);
+    if (!check || !IsWindowEnabled(check)) return;
+    SendMessageW(check, BM_CLICK, 0, 0);
+}
+
+void logBackendForPid(HWND statusLabel, DWORD pid) {
+    if (!statusLabel || pid == 0) return;
+    const AudioBackend backend = controller::getAudioBackendForPid(pid);
+    if (backend == AudioBackend::Unknown) return;
+
+    auto it = g_loggedBackends.find(pid);
+    if (it != g_loggedBackends.end() && it->second == backend) {
+        return;
+    }
+    g_loggedBackends[pid] = backend;
+
+    std::wstring backendName;
+    switch (backend) {
+    case AudioBackend::DirectSound:
+        backendName = L"DirectSound";
+        break;
+    case AudioBackend::Wasapi:
+        backendName = L"WASAPI";
+        break;
+    default:
+        backendName = L"Other(" + std::to_wstring(static_cast<std::uint32_t>(backend)) + L")";
+        break;
+    }
+
+    std::wstring label = L"PID " + std::to_wstring(pid);
+    auto itName = g_hookedPidNames.find(pid);
+    if (itName != g_hookedPidNames.end() && !itName->second.empty()) {
+        label = itName->second + L" (PID " + std::to_wstring(pid) + L")";
+    }
+    setStatus(statusLabel, L"Audio backend for " + label + L": " + backendName);
 }
 
 void ensureUiTextLoaded() {
@@ -229,6 +296,12 @@ void refreshUiText(HWND hwnd) {
     }
     if (g_hotkeyLabel) {
         SetWindowTextW(g_hotkeyLabel, ui_text::UiText(UiTextId::LabelHotkey).c_str());
+    }
+    if (g_infoLabel) {
+        SetWindowTextW(g_infoLabel, ui_text::UiText(UiTextId::LabelInfo).c_str());
+    }
+    if (g_minimizeToTrayLabel) {
+        SetWindowTextW(g_minimizeToTrayLabel, ui_text::UiText(UiTextId::LabelMinimizeToTray).c_str());
     }
     if (g_link) {
         const auto &linkText = g_linkIsSysLink ? ui_text::UiText(UiTextId::LinkMarkup)
@@ -361,28 +434,41 @@ void updateProcessBgmCheckbox(HWND hwnd) {
 
 void updateAutoHookDelayControls(HWND hwnd) {
     if (!g_autoHookDelayLabel || !g_autoHookDelayCheck) return;
-    const bool autoHookEnabled =
+    bool autoHookEnabled =
         g_autoHookCheck && (SendMessageW(g_autoHookCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    ShowWindow(g_autoHookDelayLabel, autoHookEnabled ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_autoHookDelayCheck, autoHookEnabled ? SW_SHOW : SW_HIDE);
+    ProcessInfo proc;
+    std::wstring error;
+    std::wstring exePath;
+    if (autoHookEnabled) {
+        if (!getSelectedProcess(hwnd, proc, error) ||
+            !controller::getProcessExePath(proc.pid, exePath, error)) {
+            autoHookEnabled = false;
+        }
+    }
+
+    ShowWindow(g_autoHookDelayLabel, SW_SHOW);
+    ShowWindow(g_autoHookDelayCheck, SW_SHOW);
+    EnableWindow(g_autoHookDelayLabel, autoHookEnabled);
+    EnableWindow(g_autoHookDelayCheck, autoHookEnabled);
     if (!autoHookEnabled) {
         SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, BST_UNCHECKED, 0);
         return;
     }
-    ProcessInfo proc;
-    std::wstring error;
-    if (!getSelectedProcess(hwnd, proc, error)) {
-        SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-        return;
-    }
-    std::wstring exePath;
-    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
-        SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-        return;
-    }
+
     double delaySeconds = 0.0;
     const bool hasDelay = controller::tryGetAutoHookDelay(exePath, proc.name, delaySeconds);
     SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, hasDelay ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+void updateMinimizeToTrayControls(HWND hwnd) {
+    if (!g_minimizeToTrayCheck) return;
+    const bool enabled = controller::getMinimizeToTrayOnClose();
+    g_state.minimizeToTrayOnClose = enabled;
+    SendMessageW(g_minimizeToTrayCheck, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    EnableWindow(g_minimizeToTrayCheck, TRUE);
+    if (g_minimizeToTrayLabel) {
+        EnableWindow(g_minimizeToTrayLabel, TRUE);
+    }
 }
 
 void updateHookButtonState(HWND hwnd) {
@@ -486,6 +572,7 @@ bool pruneHookedPids(const std::unordered_set<DWORD> &current, std::vector<Remov
                 removed->push_back(std::move(info));
             }
             g_hookedPidNames.erase(*it);
+            g_loggedBackends.erase(*it);
             it = g_hookedPids.erase(it);
             removedAny = true;
         } else {
@@ -693,6 +780,10 @@ void pollAutoHook(HWND hwnd) {
 
     g_knownPids = std::move(current);
 
+    for (const auto pid : g_hookedPids) {
+        logBackendForPid(statusLabel, pid);
+    }
+
     if (newProcesses.empty()) return;
     scheduleAutoHooksForProcesses(hwnd, newProcesses, true);
 }
@@ -748,6 +839,22 @@ void handleAutoHookDelayToggle(HWND hwnd) {
     std::wstring msg = checked ? (L"Auto-hook delay enabled for " + proc.name)
                                : (L"Auto-hook delay disabled for " + proc.name);
     setStatus(statusLabel, msg);
+}
+
+void handleMinimizeToTrayToggle(HWND hwnd) {
+    if (!g_minimizeToTrayCheck) return;
+    const bool checked = (SendMessageW(g_minimizeToTrayCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    std::wstring error;
+    if (!controller::setMinimizeToTrayOnClose(checked, error)) {
+        HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+        setStatus(statusLabel, error);
+        const bool current = controller::getMinimizeToTrayOnClose();
+        SendMessageW(g_minimizeToTrayCheck, BM_SETCHECK, current ? BST_CHECKED : BST_UNCHECKED, 0);
+        g_state.minimizeToTrayOnClose = current;
+        return;
+    }
+    g_state.minimizeToTrayOnClose = checked;
+    updateMinimizeToTrayControls(hwnd);
 }
 
 void handleProcessBgmToggle(HWND hwnd) {
@@ -974,7 +1081,9 @@ void layoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     const int padding = 12;
-    const int labelWidth = 95;
+    const int labelWidth = 90;
+    const int labelGap = 5;
+    const int labelColumn = labelWidth + labelGap;
     const int comboHeight = 24;
     const int editWidth = 40;
     const int buttonWidth = 120;
@@ -986,11 +1095,11 @@ void layoutControls(HWND hwnd) {
     int x = padding;
     int y = padding;
 
-    int comboWidth = static_cast<int>(rc.right) - labelWidth - buttonWidth - padding * 3 + 5;
+    int comboWidth = static_cast<int>(rc.right) - labelColumn - buttonWidth - padding * 3 + 5;
     if (comboWidth < 0) {
         comboWidth = 0;
     }
-    SetWindowPos(GetDlgItem(hwnd, kProcessComboId), nullptr, x + labelWidth, y, comboWidth, comboHeight, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwnd, kProcessComboId), nullptr, x + labelColumn, y, comboWidth, comboHeight, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(hwnd, kRefreshButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
                  SWP_NOZORDER);
     if (g_processLabel) {
@@ -1001,17 +1110,17 @@ void layoutControls(HWND hwnd) {
     if (g_speedLabel) {
         SetWindowPos(g_speedLabel, nullptr, x, y + 2, labelWidth, comboHeight, SWP_NOZORDER);
     }
-    SetWindowPos(GetDlgItem(hwnd, kSpeedEditId), nullptr, x + labelWidth, y, editWidth, comboHeight, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwnd, kSpeedEditId), nullptr, x + labelColumn, y, editWidth, comboHeight, SWP_NOZORDER);
     // Place ignore-BGM label and checkbox together
-    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmLabelId), nullptr, x + labelWidth + editWidth + padding, y + 2, 90, checkboxHeight,
+    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmLabelId), nullptr, x + labelColumn + editWidth + padding, y + 2, 90, checkboxHeight,
                  SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelWidth + editWidth + padding + 94, y, checkboxWidth, checkboxHeight,
+    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelColumn + editWidth + padding + 94, y, checkboxWidth, checkboxHeight,
                  SWP_NOZORDER);
     if (g_autoHookLabel) {
         const int autoHookGap = 10;
         const int innerGap = 6;
         const int delayGap = 10;
-        const int autoHookX = x + labelWidth + editWidth + padding + 94 + checkboxWidth + autoHookGap;
+        const int autoHookX = x + labelColumn + editWidth + padding + 94 + checkboxWidth + autoHookGap;
         const int autoHookLabelWidth = 130;
         SetWindowPos(g_autoHookLabel, nullptr, autoHookX, y + 2, autoHookLabelWidth, checkboxHeight, SWP_NOZORDER);
         if (g_autoHookCheck) {
@@ -1033,12 +1142,24 @@ void layoutControls(HWND hwnd) {
     y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, statusHeight, SWP_NOZORDER);
 
+    const int trayRowY = y + statusHeight + 6;
+    if (g_minimizeToTrayLabel && g_minimizeToTrayCheck) {
+        int trayLabelWidth = rc.right - padding * 2 - checkboxWidth - 6;
+        trayLabelWidth = std::min(trayLabelWidth, 180);
+        if (trayLabelWidth < 80) trayLabelWidth = 80;
+        SetWindowPos(g_minimizeToTrayLabel, nullptr, x, trayRowY + 2, trayLabelWidth, checkboxHeight, SWP_NOZORDER);
+        SetWindowPos(g_minimizeToTrayCheck, nullptr, x + trayLabelWidth + 6, trayRowY, checkboxWidth, checkboxHeight,
+                     SWP_NOZORDER);
+    }
+
     const int linkPadding = 8;
     const int comboX = rc.right - buttonWidth - padding;
     const int comboY = rc.bottom - padding - comboHeight;
     const int hotkeyWidth = static_cast<int>(buttonWidth * 0.8f);
+    const int infoWidth = std::max(24, hotkeyWidth / 3);
     const int hotkeyX = comboX - linkPadding - hotkeyWidth;
-    int linkWidth = hotkeyX - x - linkPadding;
+    const int infoX = hotkeyX - linkPadding - infoWidth;
+    int linkWidth = infoX - x - linkPadding;
     if (linkWidth < 0) linkWidth = 0;
 
     int textHeight = 0;
@@ -1055,6 +1176,9 @@ void layoutControls(HWND hwnd) {
 
     if (g_link) {
         SetWindowPos(g_link, nullptr, x, textBottomY, linkWidth, textHeight, SWP_NOZORDER);
+    }
+    if (g_infoLabel) {
+        SetWindowPos(g_infoLabel, nullptr, infoX, textBottomY, infoWidth, textHeight, SWP_NOZORDER);
     }
     if (g_hotkeyLabel) {
         SetWindowPos(g_hotkeyLabel, nullptr, hotkeyX, textBottomY, hotkeyWidth, textHeight, SWP_NOZORDER);
@@ -1139,8 +1263,26 @@ TOOLINFOW makeToolInfo(HWND control, UiTextId textId) {
     ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
     ti.hwnd = GetParent(control);
     ti.uId = reinterpret_cast<UINT_PTR>(control);
-    ti.lpszText = const_cast<wchar_t *>(ui_text::UiText(textId).c_str());
+    ti.lpszText = const_cast<wchar_t *>(resolveTooltipText(textId).c_str());
     return ti;
+}
+
+const std::wstring &resolveTooltipText(UiTextId id) {
+    if (id != UiTextId::TooltipInfo) {
+        return ui_text::UiText(id);
+    }
+    static std::wstring cached;
+    cached = ui_text::UiText(UiTextId::TooltipInfo);
+    if (cached.empty()) {
+        return cached;
+    }
+    const std::wstring needle = L"<version>";
+    std::size_t pos = 0;
+    while ((pos = cached.find(needle, pos)) != std::wstring::npos) {
+        cached.replace(pos, needle.size(), kAppVersion);
+        pos += kAppVersion.size();
+    }
+    return cached;
 }
 
 void addTooltip(HWND tooltip, HWND control, UiTextId textId) {
@@ -1258,6 +1400,59 @@ void updateTrackedTooltip(const MSG &msg) {
     }
 }
 
+void showTrayIcon(HWND hwnd) {
+    if (!hwnd || g_trayIconVisible) return;
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = kTrayCallbackMsg;
+    HICON icon = reinterpret_cast<HICON>(SendMessageW(hwnd, WM_GETICON, ICON_SMALL, 0));
+    if (!icon) {
+        icon = reinterpret_cast<HICON>(GetClassLongPtrW(hwnd, GCLP_HICONSM));
+    }
+    if (!icon) {
+        icon = LoadIconW(nullptr, MAKEINTRESOURCEW(IDI_APPLICATION));
+    }
+    nid.hIcon = icon;
+    const auto &title = ui_text::UiText(UiTextId::WindowTitle);
+    if (!title.empty()) {
+        wcsncpy_s(nid.szTip, title.c_str(), _TRUNCATE);
+    }
+    Shell_NotifyIconW(NIM_ADD, &nid);
+    g_trayIcon = nid;
+    g_trayIconVisible = true;
+}
+
+void hideTrayIcon() {
+    if (!g_trayIconVisible) return;
+    Shell_NotifyIconW(NIM_DELETE, &g_trayIcon);
+    g_trayIconVisible = false;
+    std::memset(&g_trayIcon, 0, sizeof(g_trayIcon));
+}
+
+void restoreFromTray(HWND hwnd) {
+    if (!hwnd) return;
+    hideTrayIcon();
+    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+}
+
+void showTrayMenu(HWND hwnd) {
+    if (!hwnd) return;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, kTrayMenuExitId, ui_text::UiText(UiTextId::MenuExit).c_str());
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+    PostMessageW(hwnd, WM_NULL, 0, 0);
+}
+
 bool registerHotkey(HWND hwnd, int id, UINT vk) {
     if (!RegisterHotKey(hwnd, id, kHotkeyModifiers, vk)) {
         KRKR_LOG_WARN("RegisterHotKey failed id=" + std::to_string(id) + " err=" +
@@ -1278,6 +1473,10 @@ void registerControllerHotkeys(HWND hwnd, HWND statusLabel) {
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == kMsgRestoreWindow) {
+        restoreFromTray(hwnd);
+        return 0;
+    }
     switch (message) {
     case WM_CREATE: {
         g_mainWindow = hwnd;
@@ -1293,9 +1492,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
         g_processLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcess).c_str(),
-                                         WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
+                                         WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
         g_speedLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelSpeed).c_str(),
-                                       WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
+                                       WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
         wchar_t speedText[32] = {};
         swprintf_s(speedText, L"%.2f", g_state.speed.currentSpeed);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
@@ -1308,10 +1507,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                          140 + 40 + 12 + 90, 66, 20, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
         g_ignoreBgmLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcessBgm).c_str(),
-                                           WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                           WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT,
                                            140 + 40 + 12, 66, 90, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmLabelId)), nullptr, nullptr);
         g_autoHookLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelAutoHook).c_str(),
-                                          WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                          WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT,
                                           140 + 40 + 12 + 90 + 20 + 12, 66, 135, 20,
                                           hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookLabelId)), nullptr, nullptr);
         g_autoHookCheck = CreateWindowExW(0, L"BUTTON", L"",
@@ -1319,7 +1518,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                           140 + 40 + 12 + 90 + 20 + 12 + 135 + 6, 66, 20, 20,
                                           hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookCheckId)), nullptr, nullptr);
         g_autoHookDelayLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelAutoHookDelay).c_str(),
-                                               WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                               WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT,
                                                140 + 40 + 12 + 90 + 20 + 12 + 135 + 6 + 20 + 12, 66, 140, 20,
                                                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookDelayLabelId)), nullptr, nullptr);
         g_autoHookDelayCheck = CreateWindowExW(0, L"BUTTON", L"",
@@ -1351,6 +1550,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             setStatus(statusEdit, L"Ready");
         }
 
+        g_minimizeToTrayLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelMinimizeToTray).c_str(),
+                                                WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT,
+                                                12, 0, 220, 20, hwnd,
+                                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMinimizeToTrayLabelId)),
+                                                nullptr, nullptr);
+        g_minimizeToTrayCheck = CreateWindowExW(0, L"BUTTON", L"",
+                                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                                12, 0, 20, 20, hwnd,
+                                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMinimizeToTrayCheckId)),
+                                                nullptr, nullptr);
+        if (g_minimizeToTrayLabel) {
+            SendMessageW(g_minimizeToTrayLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        }
+        if (g_minimizeToTrayCheck) {
+            SendMessageW(g_minimizeToTrayCheck, BM_SETCHECK,
+                         g_state.minimizeToTrayOnClose ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
+
         g_linkIsSysLink = true;
         const wchar_t *linkText = ui_text::UiText(UiTextId::LinkMarkup).c_str();
         g_link = CreateWindowExW(0, WC_LINK, linkText,
@@ -1372,6 +1589,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_hotkeyLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelHotkey).c_str(),
                                         WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                         12, 124, 60, 24, hwnd, nullptr, nullptr, nullptr);
+        g_infoLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelInfo).c_str(),
+                                      WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                      12, 124, 40, 24, hwnd, nullptr, nullptr, nullptr);
+        if (g_infoLabel) {
+            SendMessageW(g_infoLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        }
         if (g_hotkeyLabel) {
             if (g_hotkeyFont) {
                 DeleteObject(g_hotkeyFont);
@@ -1383,12 +1606,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 labelFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
             }
             SendMessageW(g_hotkeyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
+            if (g_infoLabel) {
+                SendMessageW(g_infoLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
+            }
+            if (g_minimizeToTrayLabel) {
+                SendMessageW(g_minimizeToTrayLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
+            }
         }
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
         updateAutoHookCheckbox(hwnd);
         updateProcessBgmCheckbox(hwnd);
+        updateMinimizeToTrayControls(hwnd);
         updateHookButtonState(hwnd);
         initKnownPids();
         scheduleAutoHooksForProcesses(hwnd, controller::enumerateSessionProcesses(), true);
@@ -1407,6 +1637,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         addTooltip(g_tooltip, g_autoHookLabel, UiTextId::TooltipAutoHook);
         addTooltip(g_tooltip, g_autoHookDelayCheck, UiTextId::TooltipAutoHookDelay);
         addTooltip(g_tooltip, g_autoHookDelayLabel, UiTextId::TooltipAutoHookDelay);
+        addTooltip(g_tooltip, g_infoLabel, UiTextId::TooltipInfo);
         addTooltip(g_tooltip, g_hotkeyLabel, UiTextId::TooltipHotkey);
         // Hook + Apply tooltip removed with button.
 
@@ -1489,12 +1720,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             syncProcessAllAudioFromCheckbox(hwnd);
             handleProcessBgmToggle(hwnd);
             applySettingsToSelectedIfHooked(hwnd);
+        } else if (id == kIgnoreBgmLabelId && HIWORD(wParam) == STN_CLICKED) {
+            toggleCheckboxFromLabel(hwnd, kIgnoreBgmCheckId);
         } else if (id == kAutoHookCheckId && HIWORD(wParam) == BN_CLICKED) {
             handleAutoHookToggle(hwnd);
+        } else if (id == kAutoHookLabelId && HIWORD(wParam) == STN_CLICKED) {
+            toggleCheckboxFromLabel(hwnd, kAutoHookCheckId);
         } else if (id == kAutoHookDelayCheckId && HIWORD(wParam) == BN_CLICKED) {
             handleAutoHookDelayToggle(hwnd);
+        } else if (id == kAutoHookDelayLabelId && HIWORD(wParam) == STN_CLICKED) {
+            toggleCheckboxFromLabel(hwnd, kAutoHookDelayCheckId);
+        } else if (id == kMinimizeToTrayCheckId && HIWORD(wParam) == BN_CLICKED) {
+            handleMinimizeToTrayToggle(hwnd);
+        } else if (id == kMinimizeToTrayLabelId && HIWORD(wParam) == STN_CLICKED) {
+            toggleCheckboxFromLabel(hwnd, kMinimizeToTrayCheckId);
         } else if (id == kLinkId && HIWORD(wParam) == STN_CLICKED) {
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-controller", nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (id == kTrayMenuExitId) {
+            g_allowClose = true;
+            hideTrayIcon();
+            DestroyWindow(hwnd);
         }
         break;
     }
@@ -1552,6 +1797,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case kMsgRefreshQuiet: {
         refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId), true);
+        updateAutoHookCheckbox(hwnd);
+        updateProcessBgmCheckbox(hwnd);
+        updateMinimizeToTrayControls(hwnd);
+        updateHookButtonState(hwnd);
         return 0;
     }
     case kMsgStatusUpdate: {
@@ -1586,6 +1835,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return 0;
     }
+    case kTrayCallbackMsg: {
+        switch (lParam) {
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+            restoreFromTray(hwnd);
+            return 0;
+        case WM_RBUTTONUP:
+            showTrayMenu(hwnd);
+            return 0;
+        default:
+            break;
+        }
+        break;
+    }
     case WM_NOTIFY: {
         auto *hdr = reinterpret_cast<NMHDR *>(lParam);
         if (hdr && hdr->idFrom == kLinkId && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
@@ -1594,7 +1857,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         break;
     }
+    case WM_CLOSE:
+        if (!g_allowClose && g_state.minimizeToTrayOnClose) {
+            showTrayIcon(hwnd);
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        }
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
+        hideTrayIcon();
         KillTimer(hwnd, kAutoHookTimerId);
         UnregisterHotKey(hwnd, kHotkeyToggleSpeedId);
         UnregisterHotKey(hwnd, kHotkeySpeedUpId);
@@ -1618,6 +1890,7 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_initialOptions = opts;
     g_state.enableLog = opts.enableLog;
     g_state.processAllAudio = opts.processAllAudio;
+    g_state.minimizeToTrayOnClose = controller::getMinimizeToTrayOnClose();
     controller::initSpeedState(g_state.speed, opts.speed, true);
     g_state.bgmSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
@@ -1631,18 +1904,22 @@ ControllerOptions getInitialOptions() {
 
 int runController(HINSTANCE hInstance, int nCmdShow) {
     KRKR_LOG_INFO("KrkrSpeedController GUI starting");
-    const wchar_t CLASS_NAME[] = L"KrkrSpeedControllerWindow";
+    const wchar_t *CLASS_NAME = kControllerWindowClass;
 
     INITCOMMONCONTROLSEX icc{sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES | ICC_LINK_CLASS};
     InitCommonControlsEx(&icc);
 
-    WNDCLASSW wc{};
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    wc.hIconSm = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
 
-    RegisterClassW(&wc);
+    RegisterClassExW(&wc);
 
     ensureUiTextLoaded();
     const auto &title = ui_text::UiText(UiTextId::WindowTitle);
