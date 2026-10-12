@@ -7,6 +7,7 @@
 - Hook log location works with non-ASCII controller paths; each hooked process writes its own `krkr_hook_<PID>.log`
 - Buffers that are not sped up keep the game's own frequency (it is only restored once after we stop processing a buffer)
 - x86 Unlock detour validates the function prologue and routes through the trampoline before going live
+- A missing or incompatible SoundTouch.dll disables audio processing instead of crashing the game (delay-load failures are SEH exceptions)
 ### Changed
 - SoundTouch.dll is delay-loaded from the hook folder; the hook and SoundTouch.dll are copied next to the game only as a fallback (an existing SoundTouch.dll there is never overwritten)
 - Import hooks are installed synchronously in DllMain, so `--launch` games are hooked before their first instruction runs
