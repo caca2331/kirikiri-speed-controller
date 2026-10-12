@@ -25,6 +25,8 @@ dist/
 ```
 控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL（x86/x64 子目录）。
 
+GitHub Actions 会在每次推送时编译 x86/x64 并运行测试（`.github/workflows/build.yml`），打包好的 `KrkrSpeedController` 文件夹可在对应运行页面的 Artifacts 中下载。版本号只在 `CMakeLists.txt` 的 `project(VERSION ...)` 中定义。
+
 ## 使用
 ### 基础
 - 启动`KrkrSpeedController.exe`
@@ -43,6 +45,7 @@ dist/
 - 如果语音变速异常，或你希望 BGM 也变速，请勾选`变速BGM`
 - 自动注入：在选中游戏后勾选`自动注入此应用`。之后检测到该游戏启动时会自动注入进程；取消勾选后移除。
 - 可编辑同目录的 `process_blacklist.txt` 来隐藏不想显示的进程。
+- 界面语言的选择会保存在 `krkr_speed_config.yaml` 中（`ui_language`），未选择过时默认为中文。
 - 可以配合CheatEngine的加速功能一起使用
 
 ### 控制器命令行参数

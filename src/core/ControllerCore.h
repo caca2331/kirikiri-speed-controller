@@ -79,6 +79,9 @@ bool setAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, 
                       std::wstring &error);
 bool getMinimizeToTrayOnClose();
 bool setMinimizeToTrayOnClose(bool enabled, std::wstring &error);
+// UI language code saved in krkr_speed_config.yaml ("en", "zh-CN", "ja"); empty if never chosen.
+std::wstring getUiLanguage();
+bool setUiLanguage(const std::wstring &langCode, std::wstring &error);
 bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t processBgmEntryCount();

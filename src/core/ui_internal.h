@@ -12,6 +12,7 @@
 
 #include "../common/SharedStatus.h"
 #include "../common/UiText.h"
+#include "KrkrVersion.h"
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <shellapi.h>
@@ -60,7 +61,10 @@ constexpr int kHotkeySpeedUpId = 2002;
 constexpr int kHotkeySpeedDownId = 2003;
 constexpr UINT kHotkeyModifiers = MOD_ALT;
 constexpr UINT kTrayMenuExitId = 4001;
-inline const std::wstring kAppVersion = L"1.2.1";
+inline const std::wstring kAppVersion = KRKR_VERSION_WSTRING;
+// Language combo entries in display order; Chinese is used until the user picks another one.
+inline constexpr const wchar_t *kLanguageCodes[] = {L"en", L"zh-CN", L"ja"};
+constexpr int kDefaultLanguageIndex = 1;
 
 struct AppState {
     std::vector<ProcessInfo> processes;
@@ -124,6 +128,7 @@ inline bool g_allowClose = false;
 inline NOTIFYICONDATAW g_trayIcon{};
 inline WNDPROC g_speedEditProc = nullptr;
 inline std::wstring g_statusBuffer;
+inline int g_languageIndex = kDefaultLanguageIndex;
 
 std::wstring toLowerCopy(const std::wstring &input);
 
@@ -132,6 +137,7 @@ void setStatus(HWND statusLabel, const std::wstring &text);
 void scrollStatusToBottom(HWND statusLabel);
 void toggleCheckboxFromLabel(HWND hwnd, int checkId);
 void ensureUiTextLoaded();
+void selectUiLanguage(HWND hwnd, int index);
 void refreshUiText(HWND hwnd);
 void layoutControls(HWND hwnd);
 int getTextHeight(HWND hwnd, int fallback);

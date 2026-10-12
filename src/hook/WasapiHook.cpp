@@ -154,9 +154,7 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
     }
 
     if (DirectSoundHook::instance().isActive()) {
-        ctx->targetFrames = 0.0;
-        ctx->outFrames = 0;
-        ctx->lastEffective = 0;
+        ctx->budget.reset();
         ctxLock.unlock();
         if (!g_loggedDsFallback.exchange(true)) {
             KRKR_LOG_INFO("WASAPI fallback disabled: DirectSound activity detected");
@@ -169,42 +167,14 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
     bool dropFrames = false;
 
     if (!speedupActive) {
-        ctx->targetFrames = 0.0;
-        ctx->outFrames = 0;
-        ctx->lastEffective = 0;
+        ctx->budget.reset();
         ctxLock.unlock();
         return g_origRenderReleaseBuffer(client, numFramesWritten, flags);
     }
 
     if (numFramesWritten > 0) {
-        const double add = static_cast<double>(numFramesWritten) / static_cast<double>(std::max(0.01f, speed));
-        ctx->targetFrames += add;
-        const std::int64_t desiredTotal = static_cast<std::int64_t>(std::llround(ctx->targetFrames));
-        std::int64_t eff = desiredTotal - static_cast<std::int64_t>(ctx->outFrames);
-        const std::int64_t minFrames = 1;
-        const std::int64_t maxFrames = static_cast<std::int64_t>(numFramesWritten);
-
-        if (ctx->sampleRate > 0) {
-            const std::int64_t maxDrift =
-                static_cast<std::int64_t>(std::llround(static_cast<double>(ctx->sampleRate) * 0.03));
-            if (maxDrift > 0) {
-                const double minEffD = ctx->targetFrames - static_cast<double>(maxDrift) -
-                                       static_cast<double>(ctx->outFrames);
-                const double maxEffD = ctx->targetFrames + static_cast<double>(maxDrift) -
-                                       static_cast<double>(ctx->outFrames);
-                const std::int64_t minEff = static_cast<std::int64_t>(std::floor(minEffD));
-                const std::int64_t maxEff = static_cast<std::int64_t>(std::ceil(maxEffD));
-                eff = std::max(eff, minEff);
-                eff = std::min(eff, maxEff);
-            }
-        }
-
-        eff = std::max(eff, minFrames);
-        eff = std::min(eff, maxFrames);
-
-        effectiveFrames = static_cast<UINT32>(eff);
+        effectiveFrames = ctx->budget.plan(numFramesWritten, speed, ctx->sampleRate);
         dropFrames = (effectiveFrames < numFramesWritten);
-        ctx->lastEffective = eff;
     }
 
     if (dropFrames && !g_loggedSpeedup.exchange(true)) {
@@ -217,7 +187,7 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
     }
 
     if (!state.lastBuffer || state.lastFrames == 0) {
-        ctx->outFrames += effectiveFrames;
+        ctx->budget.commit(effectiveFrames);
         ctxLock.unlock();
         return g_origRenderReleaseBuffer(client, effectiveFrames, flags);
     }
@@ -229,7 +199,7 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
             KRKR_LOG_INFO("WASAPI initial silence gate: zeroing buffer until first non-silent audio");
         }
         std::memset(state.lastBuffer, 0, static_cast<std::size_t>(numFramesWritten) * ctx->blockAlign);
-        ctx->outFrames += effectiveFrames;
+        ctx->budget.commit(effectiveFrames);
         ctxLock.unlock();
         updateRenderStateFlag(client, &RenderState::seenNonSilent, false);
         return g_origRenderReleaseBuffer(client, effectiveFrames, flags | AUDCLNT_BUFFERFLAGS_SILENT);
@@ -244,7 +214,7 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
                 KRKR_LOG_INFO("WASAPI dropping first non-silent buffer to avoid startup click");
             }
             std::memset(state.lastBuffer, 0, static_cast<std::size_t>(numFramesWritten) * ctx->blockAlign);
-            ctx->outFrames += effectiveFrames;
+            ctx->budget.commit(effectiveFrames);
             ctxLock.unlock();
             updateRenderStateFlag(client, &RenderState::droppedFirstNonSilent, true);
             return g_origRenderReleaseBuffer(client, effectiveFrames, flags | AUDCLNT_BUFFERFLAGS_SILENT);
@@ -257,7 +227,7 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
 
     wasapi::ensureStream(*ctx);
     if (flaggedSilent || !ctx->stream) {
-        ctx->outFrames += effectiveFrames;
+        ctx->budget.commit(effectiveFrames);
         ctxLock.unlock();
         return g_origRenderReleaseBuffer(client, effectiveFrames, flags);
     }
@@ -271,12 +241,13 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
     const auto key = reinterpret_cast<std::uintptr_t>(client);
 
     ctx->stream->resetIfIdle(std::chrono::steady_clock::now(), std::chrono::milliseconds(200), false, key);
-    auto res = ctx->stream->processTempoToSize(state.lastBuffer, inputBytes, outputBytes, speed, false, key);
+    auto &res = ctx->processed;
+    ctx->stream->processTempoToSize(state.lastBuffer, inputBytes, outputBytes, speed, false, key, res);
     if (!res.output.empty()) {
         std::memcpy(state.lastBuffer, res.output.data(), std::min(res.output.size(), outputBytes));
     }
     ctx->stream->recordPlaybackEnd(durationSec, speed);
-    ctx->outFrames += effectiveFrames;
+    ctx->budget.commit(effectiveFrames);
 
     if (!g_loggedTempo.exchange(true)) {
         KRKR_LOG_INFO("WASAPI tempo speedup active speed=" + std::to_string(speed) +

@@ -25,6 +25,8 @@ dist/
 ```
 The controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the arch subfolder.
 
+GitHub Actions builds x86/x64 and runs the tests on every push (`.github/workflows/build.yml`); the staged `KrkrSpeedController` folder can be downloaded from the run's Artifacts. The version number is defined only in `project(VERSION ...)` in `CMakeLists.txt`.
+
 ## Usage
 ### Basic
 - Launch `KrkrSpeedController.exe`.
@@ -43,6 +45,7 @@ The controller can inject into both x86 and x64 games: it spawns the injector th
 - Auto-inject: select a game from the dropdown and check `Auto-Hook This App`. When the game is detected running, it auto-injects; unchecking removes it from the config.
 - Keep the controller running in the background; after the first injection, enable auto-hook so future launches are injected and sped up automatically.
 - Edit `process_blacklist.txt` beside the controller to hide processes from the process selection dropdown.
+- The UI language you pick is saved in `krkr_speed_config.yaml` (`ui_language`); until you pick one, Chinese is used.
 - Can be used together with Cheat Engine speed hacks.
 
 ### Controller CLI options

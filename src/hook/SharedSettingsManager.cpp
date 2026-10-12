@@ -1,11 +1,21 @@
 #include "SharedSettingsManager.h"
 #include "../common/Logging.h"
+#include "KrkrVersion.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace krkrspeed {
+
+namespace {
+
+std::string formatPackedVersion(std::uint32_t packed) {
+    return std::to_string(packed / 10000) + "." + std::to_string(packed / 100 % 100) + "." + std::to_string(packed % 100);
+}
+
+} // namespace
 
 SharedSettingsManager &SharedSettingsManager::instance() {
     static SharedSettingsManager mgr;
@@ -27,7 +37,9 @@ bool SharedSettingsManager::attachSharedSettings() {
             }
             return false;
         }
-        view = static_cast<const SharedSettings *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedSettings)));
+        // Size 0 maps the whole section, which may be shorter than our struct if an older controller made it;
+        // views are page-granular and pagefile sections start zeroed, so the missing tail reads as 0.
+        view = static_cast<const SharedSettings *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
         if (!view) {
             KRKR_LOG_WARN("MapViewOfFile failed for shared settings");
             CloseHandle(mapping);
@@ -39,7 +51,15 @@ bool SharedSettingsManager::attachSharedSettings() {
     SharedSettings snap{};
     std::memcpy(&snap, view, sizeof(snap));
     applySharedSettings(snap);
-    KRKR_LOG_INFO("Attached to shared settings map");
+    if (snap.controllerVersion == 0) {
+        KRKR_LOG_WARN("Attached to shared settings map; controller predates version tagging (hook " +
+                      std::string(KRKR_VERSION_STRING) + ")");
+    } else if (snap.controllerVersion != KRKR_VERSION_PACKED) {
+        KRKR_LOG_WARN("Attached to shared settings map; controller " + formatPackedVersion(snap.controllerVersion) +
+                      " differs from hook " + KRKR_VERSION_STRING + "; update both together");
+    } else {
+        KRKR_LOG_INFO("Attached to shared settings map (controller and hook " + std::string(KRKR_VERSION_STRING) + ")");
+    }
     return true;
 }
 

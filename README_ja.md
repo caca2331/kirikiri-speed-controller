@@ -25,6 +25,8 @@ dist/
 ```
 コントローラーは x86 と x64 のゲームの両方に注入できます。対象プロセスに合わせて injector を選び、対応する Hook DLL（x86/x64 のサブフォルダ）を使用します。
 
+GitHub Actions がプッシュごとに x86/x64 をビルドしてテストを実行します（`.github/workflows/build.yml`）。配置済みの `KrkrSpeedController` フォルダは実行ページの Artifacts からダウンロードできます。バージョン番号は `CMakeLists.txt` の `project(VERSION ...)` でのみ定義します。
+
 ## 使い方
 ### 基本
 - `KrkrSpeedController.exe` を起動します。
@@ -43,6 +45,7 @@ dist/
 - 自動注入：ゲームを選択して `Auto-Hook This App` にチェックを入れると、起動検知時に自動注入します。解除で設定を削除します。
 - コントローラーはバックグラウンドで動かしたままにし、初回注入後に自動注入を有効化すると、以後の起動時に自動で注入・変速されます。
 - コントローラーと同じフォルダの `process_blacklist.txt` を編集すると、ドロップダウンから隠したいプロセスを指定できます。
+- 選択した表示言語は `krkr_speed_config.yaml`（`ui_language`）に保存されます。未選択の場合は中国語で表示されます。
 - Cheat Engine の速度変更と併用できます。
 
 ### コントローラーの CLI オプション

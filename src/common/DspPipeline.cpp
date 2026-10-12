@@ -139,27 +139,27 @@ DspPipeline::DspPipeline(std::uint32_t sampleRate, std::uint32_t channels, const
 
 DspPipeline::~DspPipeline() = default;
 
-std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::size_t bytes, float speedRatio,
-                                              DspMode mode) {
+void DspPipeline::process(const std::uint8_t *data, std::size_t bytes, float speedRatio, DspMode mode,
+                          std::vector<std::uint8_t> &output) {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    output.clear();
     if (!data || bytes == 0 || m_channels == 0) {
-        return {};
+        return;
     }
 
     // Near-1.0 speed: bypass DSP entirely and let callers passthrough the original buffer.
     if (std::fabs(speedRatio - 1.0f) <= 0.001f) {
-        return {};
+        return;
     }
 
     const float ratio = std::max(0.01f, speedRatio);
     const std::size_t sampleCount = bytes / bytesPerSample(m_format);
     const std::size_t frameCount = sampleCount / m_channels;
     if (frameCount == 0) {
-        return {};
+        return;
     }
 
     toSamples(data, frameCount * m_channels, m_format, m_impl->input);
-    std::vector<std::uint8_t> output;
 
 #ifdef USE_SOUNDTOUCH
     if (mode == DspMode::Tempo) {
@@ -207,9 +207,8 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
 #endif
 
     if (output.empty() && mode == DspMode::Pitch) {
-        return std::vector<std::uint8_t>(data, data + bytes);
+        output.assign(data, data + bytes);
     }
-    return output;
 }
 
 void DspPipeline::flush() {

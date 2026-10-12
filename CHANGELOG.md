@@ -15,8 +15,16 @@
 - WASAPI processes float/PCM32 streams natively (no 16-bit round trip); COM format probes run once per stream
 - DirectSound processing holds only a per-buffer lock; settings come from one shared snapshot
 - Split `ui.cpp`, `ControllerCore.cpp` and `WasapiHook.cpp` below 1000 lines; removed dead code
+- Log messages are no longer built when logging is off; log timestamps include milliseconds
+- Process list looks up window titles in one pass instead of one scan per process
+- Audio paths reuse their output buffers instead of allocating on every Unlock/ReleaseBuffer
+- The version is defined once in `CMakeLists.txt` (`project(VERSION)`) and generated into `KrkrVersion.h`
 ### Added
 - DSP unit tests (`-DBUILD_TESTS=ON`, `ctest`); they also build on non-Windows hosts with a fallback DSP
+- Unit tests for the WASAPI frame-drop budget (`FrameDropBudget.h`) and for buffer reuse
+- GitHub Actions workflow: x86/x64 build + tests on every push, staged `dist` folder uploaded as an artifact
+- The selected UI language is remembered in `krkr_speed_config.yaml` (`ui_language`)
+- Shared settings carry the controller version; the hook log warns when controller and hook versions differ
 
 ## [1.2.1] - 2026-01-12
 ### Added

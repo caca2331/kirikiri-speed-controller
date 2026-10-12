@@ -60,9 +60,9 @@ void AudioStreamProcessor::clearCbuffer() {
     m_cbufferHead = 0;
 }
 
-AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::size_t bytes, float userSpeed,
-                                                 bool shouldLog, std::uintptr_t key) {
-    AudioProcessResult result;
+void AudioStreamProcessor::process(const std::uint8_t *data, std::size_t bytes, float userSpeed, bool shouldLog,
+                                   std::uintptr_t key, AudioProcessResult &result) {
+    result.output.clear();
     auto fillPassthrough = [&](float appliedSpeed) {
         if (data && bytes > 0) {
             result.output.assign(data, data + bytes);
@@ -72,12 +72,12 @@ AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::
     };
     if (!data || bytes == 0 || !m_dsp) {
         fillPassthrough(1.0f);
-        return result;
+        return;
     }
     if (bytes < 10) {
         // Ignore tiny buffers entirely.
         fillPassthrough(userSpeed);
-        return result;
+        return;
     }
 
     const float denom = std::max(0.01f, userSpeed);
@@ -103,7 +103,8 @@ AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::
     need -= takeFromCbuffer(result.output, need);
 
     // 2) Always process new input; if output already filled, stash everything to cbuffer.
-    auto out = m_dsp->process(data, bytes, pitchDown, DspMode::Pitch);
+    auto &out = m_dspOut;
+    m_dsp->process(data, bytes, pitchDown, DspMode::Pitch, out);
     if (out.empty()) {
         if (shouldLog) {
             KRKR_LOG_DEBUG("AudioStream: pitch-compensate produced 0 bytes; passthrough key=" +
@@ -129,16 +130,16 @@ AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::
     result.cbufferSize = cbufferSize();
     result.appliedSpeed = userSpeed;
     m_lastAppliedSpeed = result.appliedSpeed;
-    return result;
 }
 
-AudioProcessResult AudioStreamProcessor::processTempoToSize(const std::uint8_t *data, std::size_t inputBytes,
-                                                            std::size_t outputBytes, float userSpeed, bool shouldLog,
-                                                            std::uintptr_t key) {
-    AudioProcessResult result;
+void AudioStreamProcessor::processTempoToSize(const std::uint8_t *data, std::size_t inputBytes,
+                                              std::size_t outputBytes, float userSpeed, bool shouldLog,
+                                              std::uintptr_t key, AudioProcessResult &result) {
+    result.output.clear();
+    result.cbufferSize = cbufferSize();
     if (outputBytes == 0) {
         result.appliedSpeed = userSpeed;
-        return result;
+        return;
     }
 
     const float appliedSpeed = userSpeed <= 0.01f ? 1.0f : userSpeed;
@@ -165,14 +166,15 @@ AudioProcessResult AudioStreamProcessor::processTempoToSize(const std::uint8_t *
         m_abuffer.insert(m_abuffer.end(), data, data + inputBytes);
     }
 
-    std::vector<std::uint8_t> processed;
+    auto &processed = m_dspOut;
+    processed.clear();
     if (m_dsp && !m_abuffer.empty()) {
         const std::size_t align = m_blockAlign ? m_blockAlign : 1;
         std::size_t minBytes = static_cast<std::size_t>(bytesPerSec * 0.03);
         minBytes = (minBytes / align) * align;
         if (minBytes == 0) minBytes = align;
         if (m_abuffer.size() >= minBytes) {
-            processed = m_dsp->process(m_abuffer.data(), m_abuffer.size(), appliedSpeed, DspMode::Tempo);
+            m_dsp->process(m_abuffer.data(), m_abuffer.size(), appliedSpeed, DspMode::Tempo, processed);
             m_abuffer.clear();
             if (processed.empty() && shouldLog) {
                 KRKR_LOG_DEBUG("AudioStream: tempo produced 0 bytes; holding output key=" +
@@ -201,7 +203,6 @@ AudioProcessResult AudioStreamProcessor::processTempoToSize(const std::uint8_t *
     result.cbufferSize = cbufferSize();
     result.appliedSpeed = appliedSpeed;
     m_lastAppliedSpeed = result.appliedSpeed;
-    return result;
 }
 
 void AudioStreamProcessor::resetIfIdle(std::chrono::steady_clock::time_point now,

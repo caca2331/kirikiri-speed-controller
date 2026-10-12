@@ -470,7 +470,8 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                                static_cast<double>(DSBFREQUENCY_MAX));
             desiredFreq = static_cast<DWORD>(clampedD);
             appliedSpeed = base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
-            auto res = info.stream->process(combined.data(), combined.size(), appliedSpeed, shouldLog, bufKey);
+            auto &res = info.processed;
+            info.stream->process(combined.data(), combined.size(), appliedSpeed, shouldLog, bufKey, res);
             if (res.output.size() == combined.size()) {
                 combined.swap(res.output);
             }

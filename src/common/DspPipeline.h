@@ -38,12 +38,18 @@ public:
     DspPipeline(const DspPipeline &) = delete;
     DspPipeline &operator=(const DspPipeline &) = delete;
 
-    // Returns processed PCM bytes in the pipeline's sample format.
+    // Replaces `output` with processed PCM bytes in the pipeline's sample format; its capacity is reused.
     // mode=Tempo: adjust tempo by speedRatio (pitch preserved).
     // mode=Pitch: adjust pitch by speedRatio (tempo preserved).
-    // Returns empty when speedRatio is ~1.0 (callers pass the input through).
+    // Leaves `output` empty when speedRatio is ~1.0 (callers pass the input through).
+    void process(const std::uint8_t *data, std::size_t bytes, float speedRatio, DspMode mode,
+                 std::vector<std::uint8_t> &output);
     std::vector<std::uint8_t> process(const std::uint8_t *data, std::size_t bytes, float speedRatio,
-                                      DspMode mode = DspMode::Tempo);
+                                      DspMode mode = DspMode::Tempo) {
+        std::vector<std::uint8_t> output;
+        process(data, bytes, speedRatio, mode, output);
+        return output;
+    }
 
     // Flush internal buffered samples/state.
     void flush();

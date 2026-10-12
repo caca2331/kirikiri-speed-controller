@@ -49,8 +49,10 @@ std::string currentTimestamp() {
 #else
     localtime_r(&time, &tm);
 #endif
+    const auto millis =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << '.' << std::setw(3) << std::setfill('0') << millis;
     return oss.str();
 }
 
@@ -239,6 +241,10 @@ void logMessage(LogLevel level, const std::wstring &message) {
 void SetLoggingEnabled(bool enabled) {
     auto &s = state();
     s.enabled.store(enabled);
+}
+
+bool IsLoggingEnabled() {
+    return state().enabled.load(std::memory_order_relaxed);
 }
 
 void SetLogDirectory(const std::wstring &path) {

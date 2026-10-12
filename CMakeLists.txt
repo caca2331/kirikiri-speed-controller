@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(KrkrSpeedHook LANGUAGES CXX)
+# The only place the release version is defined; see src/common/KrkrVersion.h.in.
+project(KrkrSpeedHook VERSION 1.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,6 +52,8 @@ add_library(krkr_common STATIC
     src/common/UiText.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
+configure_file(src/common/KrkrVersion.h.in "${CMAKE_BINARY_DIR}/generated/KrkrVersion.h" @ONLY)
+target_include_directories(krkr_common PUBLIC "${CMAKE_BINARY_DIR}/generated")
 if(TARGET SoundTouch::SoundTouch)
     target_compile_definitions(krkr_common PUBLIC USE_SOUNDTOUCH)
     # Add SoundTouch headers explicitly for this target to satisfy MSVC include lookup.

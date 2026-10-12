@@ -14,11 +14,13 @@ enum class LogLevel { Debug, Info, Warn, Error };
 
 #if KRKR_ENABLE_LOGGING
 void SetLoggingEnabled(bool enabled);
+bool IsLoggingEnabled();
 void SetLogDirectory(const std::wstring &path);
 void logMessage(LogLevel level, const std::string &message);
 void logMessage(LogLevel level, const std::wstring &message);
 #else
 inline void SetLoggingEnabled(bool) {}
+inline bool IsLoggingEnabled() { return false; }
 inline void SetLogDirectory(const std::wstring &) {}
 inline void logMessage(LogLevel, const std::string &) {}
 inline void logMessage(LogLevel, const std::wstring &) {}
@@ -33,10 +35,17 @@ inline std::string formatHex(std::uint64_t value) {
 } // namespace krkrspeed
 
 #if KRKR_ENABLE_LOGGING
-#define KRKR_LOG_DEBUG(msg) ::krkrspeed::logMessage(::krkrspeed::LogLevel::Debug, (msg))
-#define KRKR_LOG_INFO(msg) ::krkrspeed::logMessage(::krkrspeed::LogLevel::Info, (msg))
-#define KRKR_LOG_WARN(msg) ::krkrspeed::logMessage(::krkrspeed::LogLevel::Warn, (msg))
-#define KRKR_LOG_ERROR(msg) ::krkrspeed::logMessage(::krkrspeed::LogLevel::Error, (msg))
+// The message expression is only evaluated when logging is on, so building strings costs nothing otherwise.
+#define KRKR_LOG_AT(level, msg)                                                                                        \
+    do {                                                                                                               \
+        if (::krkrspeed::IsLoggingEnabled()) {                                                                         \
+            ::krkrspeed::logMessage((level), (msg));                                                                   \
+        }                                                                                                              \
+    } while (0)
+#define KRKR_LOG_DEBUG(msg) KRKR_LOG_AT(::krkrspeed::LogLevel::Debug, msg)
+#define KRKR_LOG_INFO(msg) KRKR_LOG_AT(::krkrspeed::LogLevel::Info, msg)
+#define KRKR_LOG_WARN(msg) KRKR_LOG_AT(::krkrspeed::LogLevel::Warn, msg)
+#define KRKR_LOG_ERROR(msg) KRKR_LOG_AT(::krkrspeed::LogLevel::Error, msg)
 #else
 #define KRKR_LOG_DEBUG(msg) ((void)0)
 #define KRKR_LOG_INFO(msg) ((void)0)

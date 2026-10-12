@@ -1,6 +1,7 @@
 // DSP smoke tests: platform independent; with SoundTouch disabled they exercise the fallback DSP.
 #include "common/AudioStreamProcessor.h"
 #include "common/DspPipeline.h"
+#include "common/FrameDropBudget.h"
 
 #include <chrono>
 #include <cmath>
@@ -162,6 +163,72 @@ void testDspFormatsRoundTrip() {
     }
 }
 
+// Reusing one result object across calls must give byte-identical output to fresh results.
+void testReusedResultMatchesFresh() {
+    const std::uint32_t channels = 2;
+    const SampleFormat format = SampleFormat::Int16;
+    const std::uint32_t blockAlign = channels * bytesPerSample(format);
+    AudioStreamProcessor fresh(44100, channels, blockAlign, DspConfig{}, format);
+    AudioStreamProcessor reused(44100, channels, blockAlign, DspConfig{}, format);
+    AudioProcessResult result;
+    for (float speed : {1.5f, 1.0f, 2.0f}) {
+        for (std::size_t frames : {441u, 2205u, 100u, 3000u}) {
+            auto chunk = makeSine(format, frames, channels);
+            auto expected = fresh.process(chunk.data(), chunk.size(), speed, false, 5);
+            reused.process(chunk.data(), chunk.size(), speed, false, 5, result);
+            CHECK(result.output == expected.output);
+            CHECK(result.cbufferSize == expected.cbufferSize);
+        }
+    }
+    AudioStreamProcessor freshTempo(48000, channels, blockAlign, DspConfig{}, format);
+    AudioStreamProcessor reusedTempo(48000, channels, blockAlign, DspConfig{}, format);
+    for (int i = 0; i < 20; ++i) {
+        auto chunk = makeSine(format, 480, channels);
+        const std::size_t outBytes = 320 * blockAlign;
+        auto expected = freshTempo.processTempoToSize(chunk.data(), chunk.size(), outBytes, 1.5f, false, 6);
+        reusedTempo.processTempoToSize(chunk.data(), chunk.size(), outBytes, 1.5f, false, 6, result);
+        CHECK(result.output == expected.output);
+    }
+}
+
+// The WASAPI drop budget submits about frames / speed per period and never drifts from the ideal total.
+void testFrameDropBudgetTracksSpeed() {
+    const std::uint32_t periods[] = {480, 441, 1024, 160, 479};
+    for (float speed : {1.25f, 1.5f, 2.0f, 3.0f}) {
+        FrameDropBudget budget;
+        std::uint64_t written = 0;
+        bool inRange = true;
+        for (int round = 0; round < 200; ++round) {
+            for (std::uint32_t frames : periods) {
+                const std::uint32_t eff = budget.plan(frames, speed, 48000);
+                inRange &= eff >= 1 && eff <= frames;
+                budget.commit(eff);
+                written += frames;
+            }
+        }
+        CHECK(inRange);
+        const double ideal = static_cast<double>(written) / speed;
+        CHECK(std::fabs(static_cast<double>(budget.outFrames) - ideal) <= 1.0);
+    }
+}
+
+void testFrameDropBudgetEdges() {
+    FrameDropBudget budget;
+    CHECK(budget.plan(0, 2.0f, 48000) == 0);
+    CHECK(budget.targetFrames == 0.0 && budget.outFrames == 0);
+    // Tiny periods at a high speed still submit at least one frame each.
+    for (int i = 0; i < 10; ++i) {
+        const std::uint32_t eff = budget.plan(4, 10.0f, 48000);
+        CHECK(eff == 1);
+        budget.commit(eff);
+    }
+    budget.reset();
+    CHECK(budget.targetFrames == 0.0 && budget.outFrames == 0);
+    // Without a known sample rate the drift clamp is skipped but the period bounds still hold.
+    const std::uint32_t eff = budget.plan(480, 2.0f, 0);
+    CHECK(eff == 240);
+}
+
 } // namespace
 
 int main() {
@@ -170,6 +237,9 @@ int main() {
     testTempoToSizeHonorsOutputSize();
     testIdleResetClearsState();
     testDspFormatsRoundTrip();
+    testReusedResultMatchesFresh();
+    testFrameDropBudgetTracksSpeed();
+    testFrameDropBudgetEdges();
     if (g_failures == 0) {
         std::cout << "All DSP tests passed\n";
         return 0;

@@ -4,6 +4,7 @@
 #include "../common/Logging.h"
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 
 namespace krkrspeed::ui::detail {
 namespace {
@@ -97,8 +98,29 @@ void ensureUiTextLoaded() {
             KRKR_LOG_WARN(L"UiText load failed: " + error);
         }
     }
-    ui_text::SetUiLanguage(L"zh-CN");
+    const auto saved = controller::getUiLanguage();
+    g_languageIndex = kDefaultLanguageIndex;
+    for (int i = 0; i < static_cast<int>(std::size(kLanguageCodes)); ++i) {
+        if (!saved.empty() && _wcsicmp(saved.c_str(), kLanguageCodes[i]) == 0) {
+            g_languageIndex = i;
+        }
+    }
+    ui_text::SetUiLanguage(kLanguageCodes[g_languageIndex]);
     loaded = true;
+}
+
+// Switches the UI text to a language combo entry and remembers the choice in the config file.
+void selectUiLanguage(HWND hwnd, int index) {
+    if (index < 0 || index >= static_cast<int>(std::size(kLanguageCodes))) {
+        index = 0;
+    }
+    g_languageIndex = index;
+    ui_text::SetUiLanguage(kLanguageCodes[index]);
+    refreshUiText(hwnd);
+    std::wstring error;
+    if (!controller::setUiLanguage(kLanguageCodes[index], error)) {
+        KRKR_LOG_WARN(L"Failed to save UI language: " + error);
+    }
 }
 
 void refreshUiText(HWND hwnd) {

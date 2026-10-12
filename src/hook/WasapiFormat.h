@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include "../common/AudioStreamProcessor.h"
+#include "../common/FrameDropBudget.h"
 
 namespace krkrspeed::wasapi {
 
@@ -25,10 +26,9 @@ struct StreamContext {
     bool channelProbeDone = false; // IAudioStreamVolume channel probe attempted
     bool formatProbeDone = false;  // GetMixFormat probe attempted
     std::unique_ptr<AudioStreamProcessor> stream;
+    AudioProcessResult processed; // reused DSP output buffer
     std::mutex mutex;
-    double targetFrames = 0.0;
-    std::uint64_t outFrames = 0;
-    std::int64_t lastEffective = 0;
+    FrameDropBudget budget;
 };
 
 void parseFormatFlags(const WAVEFORMATEX *format, bool &pcm16, bool &pcm32, bool &float32);

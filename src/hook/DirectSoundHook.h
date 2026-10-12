@@ -77,6 +77,7 @@ private:
         std::uint64_t unlockCount = 0;
         std::uint64_t processedFrames = 0;
         std::vector<std::uint8_t> combined;
+        AudioProcessResult processed; // reused DSP output; swapped with `combined` when sizes match
         std::unique_ptr<AudioStreamProcessor> stream;
     };
     using BufferPtr = std::shared_ptr<BufferInfo>;

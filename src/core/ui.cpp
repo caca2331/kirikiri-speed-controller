@@ -96,7 +96,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
             SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"中文 Chinese"));
             SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"日本語 Japanese"));
-            SendMessageW(g_languageCombo, CB_SETCURSEL, 1, 0);
+            SendMessageW(g_languageCombo, CB_SETCURSEL, g_languageIndex, 0);
         }
         if (ignoreBgm) {
             SendMessageW(ignoreBgm, BM_SETCHECK, g_state.processAllAudio ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -263,15 +263,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             updateProcessBgmCheckbox(hwnd);
             updateHookButtonState(hwnd);
         } else if (id == kLanguageComboId && HIWORD(wParam) == CBN_SELCHANGE) {
-            const int sel = static_cast<int>(SendMessageW(g_languageCombo, CB_GETCURSEL, 0, 0));
-            if (sel == 1) {
-                ui_text::SetUiLanguage(L"zh-CN");
-            } else if (sel == 2) {
-                ui_text::SetUiLanguage(L"ja");
-            } else {
-                ui_text::SetUiLanguage(L"en");
-            }
-            refreshUiText(hwnd);
+            selectUiLanguage(hwnd, static_cast<int>(SendMessageW(g_languageCombo, CB_GETCURSEL, 0, 0)));
         } else if (id == kSpeedEditId && HIWORD(wParam) == EN_KILLFOCUS) {
             HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
             if (editSpeed) {

@@ -3,6 +3,7 @@
 #include "../common/SharedSettings.h"
 #include "../common/SharedStatus.h"
 #include "../common/Logging.h"
+#include "KrkrVersion.h"
 #include <TlHelp32.h>
 #include <fstream>
 #include <algorithm>
@@ -34,32 +35,27 @@ ProcessArch classifyMachine(USHORT machine) {
     }
 }
 
-bool getVisibleWindowTitle(DWORD pid, std::wstring &titleOut) {
-    struct EnumData {
-        DWORD pid;
-        bool found = false;
-        std::wstring *title = nullptr;
-    } data{pid, false, &titleOut};
-
+// One EnumWindows pass: title of the first visible top-level window (in z-order) for each process.
+std::unordered_map<DWORD, std::wstring> collectVisibleWindowTitles() {
+    std::unordered_map<DWORD, std::wstring> titles;
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
-            auto *d = reinterpret_cast<EnumData *>(lParam);
+            auto *map = reinterpret_cast<std::unordered_map<DWORD, std::wstring> *>(lParam);
+            if (!IsWindowVisible(hwnd)) {
+                return TRUE;
+            }
             DWORD windowPid = 0;
             GetWindowThreadProcessId(hwnd, &windowPid);
-            if (windowPid == d->pid && IsWindowVisible(hwnd)) {
-                d->found = true;
-                wchar_t buf[256] = {};
-                if (GetWindowTextW(hwnd, buf, static_cast<int>(std::size(buf))) > 0) {
-                    if (d->title) {
-                        d->title->assign(buf);
-                    }
-                }
-                return FALSE;
+            if (windowPid == 0 || map->count(windowPid) != 0) {
+                return TRUE;
             }
+            wchar_t buf[256] = {};
+            GetWindowTextW(hwnd, buf, static_cast<int>(std::size(buf)));
+            map->emplace(windowPid, buf);
             return TRUE;
         },
-        reinterpret_cast<LPARAM>(&data));
-    return data.found;
+        reinterpret_cast<LPARAM>(&titles));
+    return titles;
 }
 
 std::filesystem::path getProcessDirectory(DWORD pid) {
@@ -408,6 +404,7 @@ std::vector<ProcessInfo> enumerateVisibleProcesses() {
         KRKR_LOG_ERROR("CreateToolhelp32Snapshot failed: " + std::to_string(GetLastError()));
         return result;
     }
+    const auto windowTitles = collectVisibleWindowTitles();
 
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
@@ -423,14 +420,14 @@ std::vector<ProcessInfo> enumerateVisibleProcesses() {
             if (isProcessBlacklisted(entry.szExeFile)) {
                 continue;
             }
-            std::wstring title;
-            if (!getVisibleWindowTitle(entry.th32ProcessID, title)) {
+            const auto titleIt = windowTitles.find(entry.th32ProcessID);
+            if (titleIt == windowTitles.end()) {
                 continue; // skip helpers/subprocesses without a top-level window
             }
 
             ProcessInfo info;
             info.name = entry.szExeFile;
-            info.windowTitle = std::move(title);
+            info.windowTitle = titleIt->second;
             info.pid = entry.th32ProcessID;
             info.hasWindow = true;
             result.push_back(std::move(info));
@@ -645,7 +642,9 @@ bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstri
     }
 
     auto mapView = [&](HANDLE h) -> SharedSettings * {
-        return static_cast<SharedSettings *>(MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, sizeof(SharedSettings)));
+        // Size 0 maps the whole section: one created by an older controller may be shorter than ours, but
+        // views are page-granular, so the full struct is still addressable.
+        return static_cast<SharedSettings *>(MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, 0));
     };
 
     SharedSettings *view = mapView(mapping);
@@ -670,6 +669,8 @@ bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstri
     settings.processAllAudio = config.processAllAudio ? 1u : 0u;
     settings.bgmSecondsGate = std::clamp(config.bgmSeconds, 0.1f, 600.0f);
     settings.stereoBgmMode = config.stereoBgmMode;
+    settings.layoutSize = static_cast<std::uint32_t>(sizeof(SharedSettings));
+    settings.controllerVersion = KRKR_VERSION_PACKED;
     *view = settings;
 
     UnmapViewOfFile(view);

@@ -18,6 +18,7 @@ std::vector<AutoHookEntry> g_autoHookEntries;
 std::vector<AutoHookEntry> g_processBgmEntries;
 std::mutex g_autoHookMutex;
 bool g_minimizeToTrayOnClose = false;
+std::wstring g_uiLanguage; // empty = never chosen; the UI then uses its default language
 std::unordered_set<std::wstring> g_processBlacklist;
 std::filesystem::file_time_type g_processBlacklistStamp{};
 std::mutex g_processBlacklistMutex;
@@ -204,6 +205,9 @@ bool saveAutoHookConfig(std::wstring &error) {
     }
     out << "controller:\n";
     out << "  minimize_to_tray_on_close: " << (g_minimizeToTrayOnClose ? "true" : "false") << "\n";
+    if (!g_uiLanguage.empty()) {
+        out << "  ui_language: \"" << escapeYamlString(g_uiLanguage) << "\"\n";
+    }
     out << "auto_hook:\n";
     for (const auto &entry : g_autoHookEntries) {
         out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
@@ -226,6 +230,7 @@ void loadAutoHookConfig() {
     g_autoHookEntries.clear();
     g_processBgmEntries.clear();
     g_minimizeToTrayOnClose = false;
+    g_uiLanguage.clear();
     const auto path = autoHookConfigPath();
     if (path.empty() || !std::filesystem::exists(path)) {
         return;
@@ -308,6 +313,8 @@ void loadAutoHookConfig() {
             }
             if (key == "minimize_to_tray_on_close") {
                 g_minimizeToTrayOnClose = (lower == "true" || lower == "1" || lower == "yes" || lower == "on");
+            } else if (key == "ui_language") {
+                g_uiLanguage = fromUtf8(unescapeYamlString(value));
             }
             continue;
         }
@@ -442,6 +449,20 @@ bool getMinimizeToTrayOnClose() {
 bool setMinimizeToTrayOnClose(bool enabled, std::wstring &error) {
     std::lock_guard<std::mutex> lock(g_autoHookMutex);
     g_minimizeToTrayOnClose = enabled;
+    return saveAutoHookConfig(error);
+}
+
+std::wstring getUiLanguage() {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    return g_uiLanguage;
+}
+
+bool setUiLanguage(const std::wstring &langCode, std::wstring &error) {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    if (g_uiLanguage == langCode) {
+        return true;
+    }
+    g_uiLanguage = langCode;
     return saveAutoHookConfig(error);
 }
 

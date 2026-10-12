@@ -20,10 +20,24 @@ public:
     AudioStreamProcessor(std::uint32_t sampleRate, std::uint32_t channels, std::uint32_t blockAlign,
                          const DspConfig &cfg, SampleFormat format = SampleFormat::Int16);
 
+    // Both overwrite `result`, reusing its output capacity; callers on the audio path keep one per stream.
+    void process(const std::uint8_t *data, std::size_t bytes, float userSpeed, bool shouldLog, std::uintptr_t key,
+                 AudioProcessResult &result);
+    void processTempoToSize(const std::uint8_t *data, std::size_t inputBytes, std::size_t outputBytes,
+                            float userSpeed, bool shouldLog, std::uintptr_t key, AudioProcessResult &result);
+
     AudioProcessResult process(const std::uint8_t *data, std::size_t bytes, float userSpeed, bool shouldLog,
-                               std::uintptr_t key);
+                               std::uintptr_t key) {
+        AudioProcessResult result;
+        process(data, bytes, userSpeed, shouldLog, key, result);
+        return result;
+    }
     AudioProcessResult processTempoToSize(const std::uint8_t *data, std::size_t inputBytes, std::size_t outputBytes,
-                                          float userSpeed, bool shouldLog, std::uintptr_t key);
+                                          float userSpeed, bool shouldLog, std::uintptr_t key) {
+        AudioProcessResult result;
+        processTempoToSize(data, inputBytes, outputBytes, userSpeed, shouldLog, key, result);
+        return result;
+    }
 
     void resetIfIdle(std::chrono::steady_clock::time_point now, std::chrono::milliseconds idleThreshold,
                      bool shouldLog, std::uintptr_t key);
@@ -47,6 +61,7 @@ private:
     std::vector<std::uint8_t> m_cbuffer;
     std::size_t m_cbufferHead = 0;
     std::vector<std::uint8_t> m_abuffer;
+    std::vector<std::uint8_t> m_dspOut; // DSP output scratch, reused across calls
     std::chrono::steady_clock::time_point m_lastPlayEnd{};
     float m_lastAppliedSpeed = 1.0f;
     bool m_padNext = true;
