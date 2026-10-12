@@ -25,7 +25,9 @@ set(_soundtouch_lib "${SOUNDTOUCH_ROOT}/lib/${_soundtouch_arch_dir}/SoundTouch.l
 set(_soundtouch_dll "${SOUNDTOUCH_ROOT}/bin/${_soundtouch_arch_dir}/SoundTouch.dll")
 set(_soundtouch_from_externals OFF)
 
-if(EXISTS "${_soundtouch_lib}" AND EXISTS "${_soundtouch_include}")
+# The vendored binaries are Windows-only; other hosts build the common library (and tests) against
+# a system SoundTouch when available, otherwise against the built-in fallback DSP.
+if(WIN32 AND EXISTS "${_soundtouch_lib}" AND EXISTS "${_soundtouch_include}")
     add_library(SoundTouch::SoundTouch SHARED IMPORTED)
     set_target_properties(SoundTouch::SoundTouch PROPERTIES
         IMPORTED_IMPLIB "${_soundtouch_lib}"
@@ -34,10 +36,12 @@ if(EXISTS "${_soundtouch_lib}" AND EXISTS "${_soundtouch_include}")
     target_include_directories(SoundTouch::SoundTouch INTERFACE "${_soundtouch_include}")
     set(_soundtouch_from_externals ON)
     set(_soundtouch_runtime "${_soundtouch_dll}")
-else()
+elseif(WIN32)
     # Fallback to system/vcpkg package if externals are missing.
     find_package(SoundTouch CONFIG REQUIRED)
     get_target_property(_soundtouch_runtime SoundTouch::SoundTouch IMPORTED_LOCATION)
+else()
+    find_package(SoundTouch CONFIG QUIET)
 endif()
 
 add_library(krkr_common STATIC
@@ -47,12 +51,16 @@ add_library(krkr_common STATIC
     src/common/UiText.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
-target_compile_definitions(krkr_common PUBLIC USE_SOUNDTOUCH)
-# Add SoundTouch headers explicitly for this target to satisfy MSVC include lookup.
-target_include_directories(krkr_common PRIVATE
-    $<TARGET_PROPERTY:SoundTouch::SoundTouch,INTERFACE_INCLUDE_DIRECTORIES>
-)
-target_link_libraries(krkr_common PUBLIC SoundTouch::SoundTouch)
+if(TARGET SoundTouch::SoundTouch)
+    target_compile_definitions(krkr_common PUBLIC USE_SOUNDTOUCH)
+    # Add SoundTouch headers explicitly for this target to satisfy MSVC include lookup.
+    target_include_directories(krkr_common PRIVATE
+        $<TARGET_PROPERTY:SoundTouch::SoundTouch,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+    target_link_libraries(krkr_common PUBLIC SoundTouch::SoundTouch)
+else()
+    message(STATUS "SoundTouch not found; krkr_common uses the fallback DSP (tests only)")
+endif()
 
 function(copy_soundtouch_runtime target)
     if(DEFINED _soundtouch_runtime AND EXISTS "${_soundtouch_runtime}")
@@ -115,11 +123,13 @@ if(WIN32)
     add_library(krkr_hook_core STATIC
         src/hook/DirectSoundHook.cpp
         src/hook/WasapiHook.cpp
+        src/hook/WasapiFormat.cpp
         src/hook/HookUtils.cpp
+        src/hook/DspRuntime.cpp
         src/hook/SharedSettingsManager.cpp
         src/hook/SharedStatusManager.cpp
     )
-    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound dxguid winmm)
+    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound dxguid winmm delayimp)
     target_include_directories(krkr_hook_core PUBLIC src)
 
     add_executable(krkr_injector
@@ -131,16 +141,24 @@ if(WIN32)
         src/hook/dllmain.cpp
     )
     target_link_libraries(krkr_speed_hook PRIVATE krkr_hook_core uuid)
+    if(MSVC)
+        # SoundTouch.dll is loaded from the hook's own folder on first use (see DspRuntime.cpp),
+        # so it no longer has to be copied next to the game executable.
+        target_link_options(krkr_speed_hook PRIVATE "/DELAYLOAD:SoundTouch.dll")
+    endif()
     copy_soundtouch_runtime(krkr_speed_hook)
 
     if(BUILD_GUI)
         add_executable(KrkrSpeedController WIN32
             src/core/main.cpp
             src/core/ui.cpp
+            src/core/ui_actions.cpp
+            src/core/ui_widgets.cpp
             src/core/ControllerCore.cpp
+            src/core/ControllerConfig.cpp
             src/core/krkr_speed_controller.rc
         )
-        target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32 uuid)
+        target_link_libraries(KrkrSpeedController PRIVATE krkr_common comctl32 uuid)
         copy_soundtouch_runtime(KrkrSpeedController)
         copy_ui_texts_runtime(KrkrSpeedController)
         copy_process_blacklist_runtime(KrkrSpeedController)
@@ -150,7 +168,13 @@ else()
 endif()
 
 if(BUILD_TESTS)
-    message(STATUS "Tests disabled by default; BUILD_TESTS=OFF")
+    enable_testing()
+    add_executable(krkr_dsp_tests tests/AudioStreamProcessorTests.cpp)
+    target_link_libraries(krkr_dsp_tests PRIVATE krkr_common)
+    if(WIN32)
+        copy_soundtouch_runtime(krkr_dsp_tests)
+    endif()
+    add_test(NAME krkr_dsp_tests COMMAND krkr_dsp_tests)
 endif()
 
 if(WIN32)
@@ -162,6 +186,6 @@ endif()
 
 if(_soundtouch_from_externals)
     message(STATUS "SoundTouch: using externals/soundtouch (${_soundtouch_arch_dir})")
-else()
+elseif(TARGET SoundTouch::SoundTouch)
     message(STATUS "SoundTouch: found via package manager")
 endif()

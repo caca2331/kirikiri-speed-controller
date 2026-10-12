@@ -38,6 +38,7 @@ The controller can inject into both x86 and x64 games: it spawns the injector th
   - `Alt + '`: toggle speed on/off.
   - `Alt + ]`: speed up 0.1x (if off, turns on and sets 1.1x).
   - `Alt + [`: speed down 0.1x (if off, turns on and sets 0.9x).
+  - Hotkeys and the speed box apply to every hooked game, regardless of the dropdown selection.
 - If voices fail to speed up, or you want BGM sped up too, check `Process BGM`.
 - Auto-inject: select a game from the dropdown and check `Auto-Hook This App`. When the game is detected running, it auto-injects; unchecking removes it from the config.
 - Keep the controller running in the background; after the first injection, enable auto-hook so future launches are injected and sped up automatically.
@@ -45,7 +46,7 @@ The controller can inject into both x86 and x64 games: it spawns the injector th
 - Can be used together with Cheat Engine speed hacks.
 
 ### Controller CLI options
-- `--log` : enable logging for controller + hook.
+- `--log` : enable logging for controller + hook. Logs are written beside the controller: `krkr_controller.log`, plus one `krkr_hook_<PID>.log` per hooked game.
 - `--speed <value>` : set the initial speed on startup (default 1.5).
 - `--mark-stereo-bgm <aggressive|hybrid|none>` : DirectSound only. Stereo→BGM heuristic (default `hybrid`). In many games voices are mono and BGMs are stereo. `aggressive`: always mark stereo as BGM. `none`: never treat stereo as a BGM signal. Primary BGM labeling method.
 - `--bgm-secs <seconds>` : BGM length gate (default 60s); longer buffers treated as BGM. Secondary way to label bgm.

@@ -65,14 +65,16 @@ fallback for untracked audio APIs (currently anything not routed through DirectS
   - Always `GetFrequency` and `SetFrequency` if mismatch (overrides games that keep resetting frequency).
   - AppliedSpeed = DesiredFreq / baseFreq; feed this to SoundTouch (pitch mode) in AudioStreamProcessor.
 - DSP result is written back to the locked regions; tail is kept in Cbuffer (not re‑DSPed).
-- Logs: `--log` enables; debug audio dumps via controller flag write WAVs to `audiolog/{original,changed}`.
+- Logs: `--log` enables; the controller writes `krkr_controller.log`, each hooked process `krkr_hook_<pid>.log` (directory from the `%TEMP%/krkr_log_dir.txt` hint, UTF-8).
 
 ## 7. Controller (KrkrSpeedController.exe)
 - Enumerates visible processes, writes shared settings (speed, gates, stereo‑BGM mode, process‑all) to per‑PID shared memory, launches injector, and reports status.
 - CLI highlights: `--log`, `--debug-audio-log`, `--process-all-audio`, `--mark-stereo-bgm <aggressive|hybrid|none>`, `--bgm-secs <N>`, `--search <term>`, `--launch <exe>`.
 
 ## 8. Injection & Shared Settings
-- Injector writes the hook DLL path into remote process via LoadLibraryW.
+- Injector writes the hook DLL path into remote process via LoadLibraryW. If the remote call times out, the path buffer is not freed and the controller does not retry other paths; a per-PID mutex (`Local\KrkrSpeedHook_<pid>`) keeps any second hook copy inert.
+- SoundTouch.dll is delay-loaded from the hook DLL's folder (`DspRuntime.cpp`); copying the hook beside the game is only a fallback.
+- Import-table hooks are installed inside DllMain; COM/DirectSound bootstrap runs on the init thread.
 - Shared settings name: `Local\KrkrSpeedSettings_<pid>`; fields include userSpeed, length gate, processAllAudio, stereoBgmMode, logging flags, skipDirectSound, safe mode.
 - Hook reads settings at attach; DS/WASAPI polls periodically for updates.
 

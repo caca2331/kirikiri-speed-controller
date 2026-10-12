@@ -56,12 +56,17 @@ int wmain_impl(int argc, wchar_t **argv) {
         return 7;
     }
 
-    DWORD waitResult = WaitForSingleObject(thread, 5000);
+    // Keep in sync with the controller, which waits longer than this for the injector itself.
+    DWORD waitResult = WaitForSingleObject(thread, 10000);
     DWORD exitCode = 0;
     GetExitCodeThread(thread, &exitCode);
 
     CloseHandle(thread);
-    VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
+    if (waitResult == WAIT_OBJECT_0) {
+        VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
+    }
+    // Otherwise LoadLibraryW may still be reading the path (e.g. blocked on the loader lock);
+    // freeing it now would make the target read freed memory, so the few bytes are leaked instead.
     CloseHandle(process);
 
     if (waitResult == WAIT_TIMEOUT) return 8;

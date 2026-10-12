@@ -7,30 +7,31 @@
 
 namespace krkrspeed {
 
+// Single owner of the controller's per-process settings block. Hooks read a sanitized snapshot
+// instead of mapping the shared memory themselves.
 class SharedSettingsManager {
 public:
     static SharedSettingsManager &instance();
 
-    void attachSharedSettings();
+    // Maps Local\KrkrSpeedSettings_<pid> and applies it. Returns false when the controller has not created it.
+    bool attachSharedSettings();
+    // Re-reads the mapped block; while unmapped, retries attaching at most once per second.
     void pollSharedSettings();
     void applySharedSettings(const SharedSettings &settings);
 
+    SharedSettings snapshot() const;
     float getUserSpeed() const;
-    bool isLengthGateEnabled() const;
-    float lengthGateSeconds() const;
-    std::uint64_t speedChangeCounter() const { return m_speedChangeCounter.load(); }
 
 private:
     SharedSettingsManager() = default;
 
     mutable std::mutex m_mutex;
-    float m_userSpeed = 1.5f;
-    bool m_lengthGateEnabled = true;
-    float m_lengthGateSeconds = 60.0f;
+    SharedSettings m_settings{};
 
+    std::mutex m_attachMutex;
     HANDLE m_sharedMapping = nullptr;
-    SharedSettings *m_sharedView = nullptr;
-    std::atomic<std::uint64_t> m_speedChangeCounter{0};
+    std::atomic<const SharedSettings *> m_sharedView{nullptr};
+    std::atomic<std::uint64_t> m_nextAttachMs{0};
     std::atomic<bool> m_warnedMissingMap{false};
 };
 

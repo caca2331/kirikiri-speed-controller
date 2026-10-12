@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <cstdio>
 #include <string>
 
 namespace krkrspeed {
@@ -21,6 +23,12 @@ inline void SetLogDirectory(const std::wstring &) {}
 inline void logMessage(LogLevel, const std::string &) {}
 inline void logMessage(LogLevel, const std::wstring &) {}
 #endif
+
+inline std::string formatHex(std::uint64_t value) {
+    char buf[24] = {};
+    std::snprintf(buf, sizeof(buf), "0x%llX", static_cast<unsigned long long>(value));
+    return buf;
+}
 
 } // namespace krkrspeed
 

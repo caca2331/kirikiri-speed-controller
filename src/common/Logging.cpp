@@ -1,5 +1,6 @@
 #include "Logging.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -25,7 +26,7 @@ struct LoggerState {
     std::mutex mutex;
     std::ofstream stream;
     bool initialized = false;
-    bool enabled = false;
+    std::atomic<bool> enabled{false};
     std::optional<std::filesystem::path> logDirOverride;
 };
 
@@ -85,32 +86,45 @@ LoggerState &state() {
     return instance;
 }
 
-std::filesystem::path moduleDirectory() {
+// Set while a thread is inside logMessage; re-entrant calls (e.g. from the hook's vectored
+// exception handler reacting to OutputDebugString) are dropped instead of re-locking the mutex.
+thread_local bool t_inLogger = false;
+
+// Path of the module that contains this code: the hook DLL inside a game, the exe in the controller.
+std::filesystem::path currentModulePath() {
 #ifdef _WIN32
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&currentModulePath), &module)) {
+        module = nullptr;
+    }
     wchar_t buffer[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) == 0) {
+    if (GetModuleFileNameW(module, buffer, MAX_PATH) == 0) {
         return {};
     }
-    std::filesystem::path p(buffer);
-    return p.parent_path();
+    return std::filesystem::path(buffer);
 #else
     return {};
 #endif
 }
 
+std::filesystem::path moduleDirectory() {
+    return currentModulePath().parent_path();
+}
+
+// Controller-side cleanup of logs from previous sessions. Logs still held open by a running
+// hooked game cannot be deleted (no FILE_SHARE_DELETE) and are left alone.
 void pruneOldLogs(const std::filesystem::path &dir) {
     std::error_code ec;
-    const std::vector<std::string> kKnownLogNames = {
-        "krkr_speed.log",
-        "krkr_controller.log",
-        "krkr_hook.log"
-    };
     for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
         if (ec) break;
-        if (!entry.is_regular_file()) continue;
-        const auto name = entry.path().filename().string();
-        if (std::find(kKnownLogNames.begin(), kKnownLogNames.end(), name) != kKnownLogNames.end()) {
-            std::filesystem::remove(entry.path(), ec);
+        std::error_code entryEc;
+        if (!entry.is_regular_file(entryEc)) continue;
+        const auto name = entry.path().filename().wstring();
+        const bool known = name == L"krkr_speed.log" || name == L"krkr_controller.log" || name == L"krkr_hook.log" ||
+                           (name.rfind(L"krkr_hook_", 0) == 0 && entry.path().extension() == L".log");
+        if (known) {
+            std::filesystem::remove(entry.path(), entryEc);
         }
     }
 }
@@ -120,35 +134,27 @@ std::filesystem::path readHintPath() {
     auto temp = std::filesystem::temp_directory_path(ec);
     if (ec) return {};
     auto hintFile = temp / "krkr_log_dir.txt";
-    if (!std::filesystem::exists(hintFile)) return {};
+    if (!std::filesystem::exists(hintFile, ec)) return {};
     std::ifstream in(hintFile);
     if (!in) return {};
     std::string line;
     std::getline(in, line);
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+        line.pop_back();
+    }
     if (line.empty()) return {};
-    std::filesystem::path p(line);
-    if (std::filesystem::exists(p) && std::filesystem::is_directory(p)) {
+    // The controller writes the hint as UTF-8; a plain std::string path would be read as ANSI.
+    std::filesystem::path p = std::filesystem::u8path(line);
+    if (std::filesystem::is_directory(p, ec)) {
         return p;
     }
     return {};
 }
 
-std::filesystem::path executableStem() {
-#ifdef _WIN32
-    wchar_t buffer[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) == 0) {
-        return {};
-    }
-    return std::filesystem::path(buffer).stem();
-#else
-    return {};
-#endif
-}
-
 std::filesystem::path chooseLogDirectory() {
     auto &s = state();
-    if (s.logDirOverride && std::filesystem::exists(*s.logDirOverride) &&
-        std::filesystem::is_directory(*s.logDirOverride)) {
+    std::error_code ec;
+    if (s.logDirOverride && std::filesystem::is_directory(*s.logDirOverride, ec)) {
         return *s.logDirOverride;
     }
     // 1) hint file in temp
@@ -158,7 +164,6 @@ std::filesystem::path chooseLogDirectory() {
     auto mod = moduleDirectory();
     if (!mod.empty()) return mod;
     // 3) temp
-    std::error_code ec;
     return std::filesystem::temp_directory_path(ec);
 }
 
@@ -171,15 +176,16 @@ void ensureOpen(LoggerState &stateRef) {
     auto dir = chooseLogDirectory();
     std::error_code ec;
 
-    auto stem = executableStem();
+    const auto stem = currentModulePath().stem().wstring();
     std::string base = "krkr_speed";
-    if (!stem.empty()) {
-        auto s = stem.string();
-        if (s == "KrkrSpeedController") base = "krkr_controller";
-        else if (s == "krkr_speed_hook") base = "krkr_hook";
+    if (stem == L"KrkrSpeedController") {
+        base = "krkr_controller";
+        pruneOldLogs(dir);
+    } else if (stem == L"krkr_speed_hook") {
+        // One log per hooked process so several games never truncate each other's log.
+        base = "krkr_hook_" + std::to_string(currentProcessId());
     }
 
-    pruneOldLogs(dir);
     const auto path = dir / (base + ".log");
     std::filesystem::remove(path, ec);
 
@@ -195,28 +201,35 @@ void writeLine(LoggerState &stateRef, LogLevel level, const std::string &line) {
         return;
     }
     stateRef.stream << "[" << currentTimestamp() << "] [" << levelToString(level) << "] " << line << std::endl;
-#ifdef _WIN32
-    std::string dbg = "[krkr] " + line + "\n";
-    OutputDebugStringA(dbg.c_str());
-#endif
 }
 
 } // namespace
 
 void logMessage(LogLevel level, const std::string &message) {
     auto &s = state();
-    if (!s.enabled) {
+    if (!s.enabled.load(std::memory_order_relaxed) || t_inLogger) {
         return;
     }
+    struct ReentryGuard {
+        ReentryGuard() { t_inLogger = true; }
+        ~ReentryGuard() { t_inLogger = false; }
+    } guard;
 
-    std::lock_guard<std::mutex> lock(s.mutex);
-    ensureOpen(s);
-    if (s.stream.is_open()) {
-        writeLine(s, level, message);
-    } else {
-        // Fallback to stderr if the log file cannot be opened.
-        std::clog << "[" << levelToString(level) << "] " << message << std::endl;
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        ensureOpen(s);
+        if (s.stream.is_open()) {
+            writeLine(s, level, message);
+        } else {
+            // Fallback to stderr if the log file cannot be opened.
+            std::clog << "[" << levelToString(level) << "] " << message << std::endl;
+        }
     }
+#ifdef _WIN32
+    // Outside the lock: OutputDebugString raises a (handled) exception that vectored handlers see.
+    const std::string dbg = "[krkr] " + message + "\n";
+    OutputDebugStringA(dbg.c_str());
+#endif
 }
 
 void logMessage(LogLevel level, const std::wstring &message) {
@@ -225,11 +238,12 @@ void logMessage(LogLevel level, const std::wstring &message) {
 
 void SetLoggingEnabled(bool enabled) {
     auto &s = state();
-    s.enabled = enabled;
+    s.enabled.store(enabled);
 }
 
 void SetLogDirectory(const std::wstring &path) {
     auto &s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
     if (path.empty()) {
         s.logDirOverride.reset();
         return;

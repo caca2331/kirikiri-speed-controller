@@ -13,16 +13,121 @@
 
 namespace krkrspeed {
 
+namespace {
+
+#ifdef USE_SOUNDTOUCH
+using SampleType = soundtouch::SAMPLETYPE;
+#else
+using SampleType = float;
+#endif
+constexpr bool kIsFloat = std::is_same_v<SampleType, float>;
+
+float loadSample(const std::uint8_t *p, SampleFormat format) {
+    switch (format) {
+    case SampleFormat::Int16: {
+        std::int16_t v = 0;
+        std::memcpy(&v, p, sizeof(v));
+        return static_cast<float>(v) * (1.0f / 32768.0f);
+    }
+    case SampleFormat::Int32: {
+        std::int32_t v = 0;
+        std::memcpy(&v, p, sizeof(v));
+        return static_cast<float>(static_cast<double>(v) * (1.0 / 2147483648.0));
+    }
+    case SampleFormat::Float32: {
+        float v = 0.0f;
+        std::memcpy(&v, p, sizeof(v));
+        return v;
+    }
+    }
+    return 0.0f;
+}
+
+void storeSample(std::uint8_t *p, float v, SampleFormat format) {
+    switch (format) {
+    case SampleFormat::Int16: {
+        const float clamped = std::clamp(v, -1.0f, 1.0f);
+        const auto s = static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
+        std::memcpy(p, &s, sizeof(s));
+        return;
+    }
+    case SampleFormat::Int32: {
+        const double clamped = std::clamp(static_cast<double>(v), -1.0, 1.0);
+        const auto s = static_cast<std::int32_t>(std::llround(clamped * 2147483647.0));
+        std::memcpy(p, &s, sizeof(s));
+        return;
+    }
+    case SampleFormat::Float32:
+        std::memcpy(p, &v, sizeof(v));
+        return;
+    }
+}
+
+// Convert interleaved bytes in `format` into SoundTouch samples.
+void toSamples(const std::uint8_t *data, std::size_t sampleCount, SampleFormat format, std::vector<SampleType> &out) {
+    out.resize(sampleCount);
+    const std::uint32_t step = bytesPerSample(format);
+    if constexpr (kIsFloat) {
+        if (format == SampleFormat::Float32) {
+            std::memcpy(out.data(), data, sampleCount * sizeof(float));
+            return;
+        }
+        for (std::size_t i = 0; i < sampleCount; ++i) {
+            out[i] = loadSample(data + i * step, format);
+        }
+    } else {
+        if (format == SampleFormat::Int16) {
+            std::memcpy(out.data(), data, sampleCount * sizeof(std::int16_t));
+            return;
+        }
+        for (std::size_t i = 0; i < sampleCount; ++i) {
+            const float clamped = std::clamp(loadSample(data + i * step, format), -1.0f, 1.0f);
+            out[i] = static_cast<SampleType>(std::lround(clamped * 32767.0f));
+        }
+    }
+}
+
+// Append SoundTouch samples to `output` as interleaved bytes in `format`.
+void appendSamples(const SampleType *samples, std::size_t sampleCount, SampleFormat format,
+                   std::vector<std::uint8_t> &output) {
+    const std::uint32_t step = bytesPerSample(format);
+    const std::size_t prev = output.size();
+    output.resize(prev + sampleCount * step);
+    std::uint8_t *dst = output.data() + prev;
+    if constexpr (kIsFloat) {
+        if (format == SampleFormat::Float32) {
+            std::memcpy(dst, samples, sampleCount * sizeof(float));
+            return;
+        }
+        for (std::size_t i = 0; i < sampleCount; ++i) {
+            storeSample(dst + i * step, samples[i], format);
+        }
+    } else {
+        if (format == SampleFormat::Int16) {
+            std::memcpy(dst, samples, sampleCount * sizeof(std::int16_t));
+            return;
+        }
+        for (std::size_t i = 0; i < sampleCount; ++i) {
+            storeSample(dst + i * step, static_cast<float>(samples[i]) * (1.0f / 32768.0f), format);
+        }
+    }
+}
+
+} // namespace
+
 struct DspPipeline::Impl {
 #ifdef USE_SOUNDTOUCH
     soundtouch::SoundTouch touch;
-    std::vector<soundtouch::SAMPLETYPE> scratch;
 #endif
+    std::vector<SampleType> input;
+    std::vector<SampleType> scratch;
     std::mutex mutex;
 };
 
-DspPipeline::DspPipeline(std::uint32_t sampleRate, std::uint32_t channels, const DspConfig &config)
-    : m_sampleRate(sampleRate), m_channels(channels), m_config(config), m_impl(std::make_unique<Impl>()) {
+DspPipeline::DspPipeline(std::uint32_t sampleRate, std::uint32_t channels, const DspConfig &config,
+                         SampleFormat format)
+    : m_sampleRate(sampleRate), m_channels(channels), m_format(format), m_config(config),
+      m_impl(std::make_unique<Impl>()) {
 #ifdef USE_SOUNDTOUCH
     m_impl->touch.setSampleRate(sampleRate);
     m_impl->touch.setChannels(static_cast<unsigned int>(channels));
@@ -37,207 +142,74 @@ DspPipeline::~DspPipeline() = default;
 std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::size_t bytes, float speedRatio,
                                               DspMode mode) {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
-    if (bytes == 0 || m_channels == 0) {
+    if (!data || bytes == 0 || m_channels == 0) {
         return {};
     }
 
-    // Near-1.0 speed: bypass SoundTouch entirely and let callers passthrough the original buffer.
+    // Near-1.0 speed: bypass DSP entirely and let callers passthrough the original buffer.
     if (std::fabs(speedRatio - 1.0f) <= 0.001f) {
         return {};
     }
 
-    const float tempo = std::max(0.01f, speedRatio);
-    const float pitch = std::max(0.01f, speedRatio);
-    const std::size_t sampleCount = bytes / sizeof(std::int16_t);
+    const float ratio = std::max(0.01f, speedRatio);
+    const std::size_t sampleCount = bytes / bytesPerSample(m_format);
     const std::size_t frameCount = sampleCount / m_channels;
     if (frameCount == 0) {
         return {};
     }
 
-#ifdef USE_SOUNDTOUCH
-    using SampleType = soundtouch::SAMPLETYPE;
-    constexpr bool kIsFloat = std::is_same_v<SampleType, float>;
-
-    const auto *pcm = reinterpret_cast<const std::int16_t *>(data);
-
-    // Prepare input for SoundTouch
-    std::vector<SampleType> input(sampleCount);
-    if constexpr (kIsFloat) {
-        constexpr float invShortMax = 1.0f / 32768.0f;
-        for (std::size_t i = 0; i < sampleCount; ++i) {
-            input[i] = static_cast<float>(pcm[i]) * invShortMax;
-        }
-    } else {
-        std::memcpy(input.data(), pcm, sampleCount * sizeof(std::int16_t));
-    }
-
-    if (mode == DspMode::Tempo) {
-        m_impl->touch.setTempo(tempo);
-        m_impl->touch.setRate(1.0f);
-        m_impl->touch.setPitch(1.0f);
-    } else {
-        m_impl->touch.setTempo(1.0f);
-        m_impl->touch.setRate(1.0f);
-        m_impl->touch.setPitch(pitch);
-    }
-
-    m_impl->touch.putSamples(input.data(), frameCount);
-
+    toSamples(data, frameCount * m_channels, m_format, m_impl->input);
     std::vector<std::uint8_t> output;
 
-    const std::size_t maxFrames = static_cast<std::size_t>(std::ceil(frameCount / std::max(0.1f, tempo)) + 1024);
-    m_impl->scratch.resize(maxFrames * m_channels);
-
-    while (true) {
-        const auto receivedFrames = m_impl->touch.receiveSamples(m_impl->scratch.data(), maxFrames);
-        if (receivedFrames == 0) break;
-        const std::size_t receivedSamples = receivedFrames * m_channels;
-
-        if constexpr (kIsFloat) {
-            std::size_t prev = output.size();
-            output.resize(prev + receivedSamples * sizeof(std::int16_t));
-            auto *outPcm = reinterpret_cast<std::int16_t *>(output.data() + prev);
-            for (std::size_t i = 0; i < receivedSamples; ++i) {
-                const float clamped = std::clamp(static_cast<float>(m_impl->scratch[i]), -1.0f, 1.0f);
-                outPcm[i] = static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
-            }
-        } else {
-            std::size_t prev = output.size();
-            output.resize(prev + receivedSamples * sizeof(std::int16_t));
-            std::memcpy(output.data() + prev, m_impl->scratch.data(), receivedSamples * sizeof(std::int16_t));
-        }
-        if (output.size() >= bytes && mode == DspMode::Tempo) break;
-        // Logic for break: if we got enough samples.
-        // Note: original logic had `if (output.size() >= bytes) break;`.
-    }
-
-    if (output.empty()) {
-        if (mode == DspMode::Pitch) {
-            return std::vector<std::uint8_t>(data, data + bytes);
-        }
-        return {};
-    }
-
-    return output;
-#else
-    if (sampleCount < 2 || std::abs(speedRatio - 1.0f) < 0.01f) {
-        KRKR_LOG_WARN("DspPipeline: SoundTouch disabled; speed unchanged (PCM path)");
-        return std::vector<std::uint8_t>(data, data + bytes);
-    }
-    const double inv = 1.0 / speedRatio;
-    const std::size_t outputSamples = static_cast<std::size_t>(sampleCount * inv);
-    std::vector<std::uint8_t> output(outputSamples * sizeof(std::int16_t));
-    const auto *input = reinterpret_cast<const std::int16_t *>(data);
-    auto *out = reinterpret_cast<std::int16_t *>(output.data());
-    for (std::size_t i = 0; i < outputSamples; ++i) {
-        const double srcIndex = i * speedRatio;
-        const std::size_t idx = static_cast<std::size_t>(srcIndex);
-        const std::size_t next = std::min<std::size_t>(idx + 1, sampleCount - 1);
-        const double frac = srcIndex - idx;
-        const std::int16_t a = input[idx];
-        const std::int16_t b = input[next];
-        out[i] = static_cast<std::int16_t>(a + (b - a) * frac);
-    }
-    return output;
-#endif
-}
-
-std::vector<float> DspPipeline::process(const float *data, std::size_t samples, float speedRatio, DspMode mode) {
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    if (samples == 0 || m_channels == 0) {
-        return {};
-    }
-
-    // Near-1.0 speed: bypass SoundTouch to avoid unnecessary processing and artifacts.
-    if (std::fabs(speedRatio - 1.0f) <= 0.001f) {
-        return {};
-    }
-
-    const float tempo = std::max(0.01f, speedRatio);
-    const float pitch = std::max(0.01f, speedRatio);
-    const std::size_t frameCount = samples / m_channels;
-    if (frameCount == 0) {
-        return {};
-    }
-
 #ifdef USE_SOUNDTOUCH
-    using SampleType = soundtouch::SAMPLETYPE;
-    constexpr bool kIsFloat = std::is_same_v<SampleType, float>;
-
-    // Prepare input
-    std::vector<SampleType> input(samples);
-    if constexpr (kIsFloat) {
-        std::memcpy(input.data(), data, samples * sizeof(float));
-    } else {
-        // Convert float to int16 (SampleType=int16)
-        for(size_t i=0; i<samples; ++i) {
-             const float clamped = std::clamp(data[i], -1.0f, 1.0f);
-             input[i] = static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
-        }
-    }
-
     if (mode == DspMode::Tempo) {
-        m_impl->touch.setTempo(tempo);
+        m_impl->touch.setTempo(ratio);
         m_impl->touch.setRate(1.0f);
         m_impl->touch.setPitch(1.0f);
     } else {
         m_impl->touch.setTempo(1.0f);
         m_impl->touch.setRate(1.0f);
-        m_impl->touch.setPitch(pitch);
+        m_impl->touch.setPitch(ratio);
     }
 
-    m_impl->touch.putSamples(input.data(), frameCount);
+    m_impl->touch.putSamples(m_impl->input.data(), static_cast<unsigned int>(frameCount));
 
-    std::vector<float> output;
-    const std::size_t maxFrames = static_cast<std::size_t>(std::ceil(frameCount / std::max(0.1f, tempo)) + 1024);
+    const float outScale = (mode == DspMode::Tempo) ? std::max(0.1f, ratio) : 1.0f;
+    const std::size_t maxFrames = static_cast<std::size_t>(std::ceil(frameCount / outScale)) + 1024;
     m_impl->scratch.resize(maxFrames * m_channels);
+    output.reserve(maxFrames * m_channels * bytesPerSample(m_format));
 
     while (true) {
-        const auto receivedFrames = m_impl->touch.receiveSamples(m_impl->scratch.data(), maxFrames);
+        const auto receivedFrames =
+            m_impl->touch.receiveSamples(m_impl->scratch.data(), static_cast<unsigned int>(maxFrames));
         if (receivedFrames == 0) break;
-        const std::size_t receivedSamples = receivedFrames * m_channels;
-
-        std::size_t prev = output.size();
-        output.resize(prev + receivedSamples);
-
-        if constexpr (kIsFloat) {
-            for(size_t i=0; i<receivedSamples; ++i) {
-                output[prev + i] = static_cast<float>(m_impl->scratch[i]);
-            }
-        } else {
-            constexpr float invShortMax = 1.0f / 32768.0f;
-            for(size_t i=0; i<receivedSamples; ++i) {
-                output[prev + i] = static_cast<float>(m_impl->scratch[i]) * invShortMax;
-            }
-        }
+        appendSamples(m_impl->scratch.data(), receivedFrames * m_channels, m_format, output);
+        if (output.size() >= bytes && mode == DspMode::Tempo) break;
     }
-
-    if (output.empty()) {
-        if (mode == DspMode::Pitch) {
-            return std::vector<float>(data, data + samples);
-        }
-        return {};
-    }
-    return output;
 #else
-    if (samples < 2 || std::abs(speedRatio - 1.0f) < 0.01f) {
-        KRKR_LOG_WARN("DspPipeline: SoundTouch disabled; speed unchanged (float path)");
-        return std::vector<float>(data, data + samples);
+    // Fallback without SoundTouch: tempo = linear resample (pitch shifts), pitch = passthrough.
+    if (mode == DspMode::Tempo) {
+        const std::size_t outFrames = static_cast<std::size_t>(static_cast<double>(frameCount) / ratio);
+        m_impl->scratch.resize(outFrames * m_channels);
+        for (std::size_t i = 0; i < outFrames; ++i) {
+            const double src = static_cast<double>(i) * ratio;
+            const std::size_t idx = std::min(static_cast<std::size_t>(src), frameCount - 1);
+            const std::size_t next = std::min(idx + 1, frameCount - 1);
+            const float frac = static_cast<float>(src - static_cast<double>(idx));
+            for (std::size_t c = 0; c < m_channels; ++c) {
+                const float a = m_impl->input[idx * m_channels + c];
+                const float b = m_impl->input[next * m_channels + c];
+                m_impl->scratch[i * m_channels + c] = a + (b - a) * frac;
+            }
+        }
+        appendSamples(m_impl->scratch.data(), m_impl->scratch.size(), m_format, output);
     }
-    const double inv = 1.0 / speedRatio;
-    const std::size_t outputSamples = static_cast<std::size_t>(samples * inv);
-    std::vector<float> output(outputSamples);
-    for (std::size_t i = 0; i < outputSamples; ++i) {
-        const double srcIndex = i * speedRatio;
-        const std::size_t idx = static_cast<std::size_t>(srcIndex);
-        const std::size_t next = std::min<std::size_t>(idx + 1, samples - 1);
-        const double frac = srcIndex - idx;
-        const float a = data[idx];
-        const float b = data[next];
-        output[i] = static_cast<float>(a + (b - a) * frac);
+#endif
+
+    if (output.empty() && mode == DspMode::Pitch) {
+        return std::vector<std::uint8_t>(data, data + bytes);
     }
     return output;
-#endif
 }
 
 void DspPipeline::flush() {

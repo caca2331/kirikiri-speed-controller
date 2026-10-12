@@ -89,7 +89,7 @@ float effectiveSpeed(const SpeedControlState &state);
 void initSpeedState(SpeedControlState &state, float speed, bool enabled = true);
 void updateSpeedFromInput(SpeedControlState &state, float speed);
 bool applySpeedToPid(DWORD pid, const SharedConfig &baseConfig, const SpeedControlState &state, std::wstring &error);
-bool applySpeedHotkey(DWORD pid, const SharedConfig &baseConfig, SpeedControlState &state,
-                      SpeedHotkeyAction action, std::wstring &status, std::wstring &error);
+// Updates the speed state for a hotkey and returns the status line; callers push the speed to processes.
+std::wstring applySpeedHotkey(SpeedControlState &state, SpeedHotkeyAction action);
 
 } // namespace krkrspeed::controller

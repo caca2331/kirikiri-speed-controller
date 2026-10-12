@@ -39,13 +39,14 @@ dist/
   - `Alt + '`：开关变速
   - `Alt + ]`：提速0.1x（未开启则开启并设为 1.1x）
   - `Alt + [`：降速0.1x（未开启则开启并设为 0.9x）
+  - 快捷键和速度输入框会作用于所有已注入的游戏（与下拉菜单当前选中项无关）
 - 如果语音变速异常，或你希望 BGM 也变速，请勾选`变速BGM`
 - 自动注入：在选中游戏后勾选`自动注入此应用`。之后检测到该游戏启动时会自动注入进程；取消勾选后移除。
 - 可编辑同目录的 `process_blacklist.txt` 来隐藏不想显示的进程。
 - 可以配合CheatEngine的加速功能一起使用
 
 ### 控制器命令行参数
-- `--log`：开启控制器和 Hook 日志。
+- `--log`：开启控制器和 Hook 日志。日志写在控制器所在目录：`krkr_controller.log`，以及每个被注入游戏各一份 `krkr_hook_<PID>.log`。
 - `--speed <倍率>`：启动时设置速度（默认 1.5）。
 - `--mark-stereo-bgm <aggressive|hybrid|none>`：DirectSound专属。立体声→BGM 判定策略，默认 `hybrid`。在多数游戏中，语音是单通道的，而BGM是立体声的。aggressive:总是将立体声标记为BGM。none:不将立体声视为BGM的特征。主要的BGM标记手段。
 - `--bgm-secs <秒>`：BGM 时长阈值（默认 60 秒），更长的缓冲视为 BGM。次要的BGM标记手段。
