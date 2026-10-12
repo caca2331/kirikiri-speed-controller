@@ -243,7 +243,7 @@ void SetLoggingEnabled(bool enabled) {
     s.enabled.store(enabled);
 }
 
-bool IsLoggingEnabled() {
+bool IsLoggingOn() {
     return state().enabled.load(std::memory_order_relaxed);
 }
 

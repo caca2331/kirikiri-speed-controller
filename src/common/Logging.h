@@ -14,13 +14,13 @@ enum class LogLevel { Debug, Info, Warn, Error };
 
 #if KRKR_ENABLE_LOGGING
 void SetLoggingEnabled(bool enabled);
-bool IsLoggingEnabled();
+bool IsLoggingOn();
 void SetLogDirectory(const std::wstring &path);
 void logMessage(LogLevel level, const std::string &message);
 void logMessage(LogLevel level, const std::wstring &message);
 #else
 inline void SetLoggingEnabled(bool) {}
-inline bool IsLoggingEnabled() { return false; }
+inline bool IsLoggingOn() { return false; }
 inline void SetLogDirectory(const std::wstring &) {}
 inline void logMessage(LogLevel, const std::string &) {}
 inline void logMessage(LogLevel, const std::wstring &) {}
@@ -38,7 +38,7 @@ inline std::string formatHex(std::uint64_t value) {
 // The message expression is only evaluated when logging is on, so building strings costs nothing otherwise.
 #define KRKR_LOG_AT(level, msg)                                                                                        \
     do {                                                                                                               \
-        if (::krkrspeed::IsLoggingEnabled()) {                                                                         \
+        if (::krkrspeed::IsLoggingOn()) {                                                                              \
             ::krkrspeed::logMessage((level), (msg));                                                                   \
         }                                                                                                              \
     } while (0)

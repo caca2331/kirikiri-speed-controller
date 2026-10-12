@@ -22,7 +22,7 @@ struct FrameDropBudget {
         if (framesWritten == 0) {
             return 0;
         }
-        targetFrames += static_cast<double>(framesWritten) / static_cast<double>(std::max(0.01f, speed));
+        targetFrames += static_cast<double>(framesWritten) / static_cast<double>((std::max)(0.01f, speed));
         const std::int64_t desiredTotal = static_cast<std::int64_t>(std::llround(targetFrames));
         std::int64_t eff = desiredTotal - static_cast<std::int64_t>(outFrames);
 

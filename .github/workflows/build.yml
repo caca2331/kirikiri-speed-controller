@@ -17,7 +17,7 @@ jobs:
       matrix:
         arch: [x64, Win32]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -S . -B build -A ${{ matrix.arch }} -DBUILD_GUI=ON -DBUILD_TESTS=ON
       - name: Build
@@ -30,7 +30,7 @@ jobs:
     needs: windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build both architectures and stage dist
         run: cmake -P cmake/dual_arch.cmake
       - uses: actions/upload-artifact@v4
@@ -43,7 +43,7 @@ jobs:
     name: DSP tests (Linux, sanitizers)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: >
           cmake -S . -B build -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
