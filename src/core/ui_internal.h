@@ -65,6 +65,9 @@ inline const std::wstring kAppVersion = KRKR_VERSION_WSTRING;
 // Language combo entries in display order; Chinese is used until the user picks another one.
 inline constexpr const wchar_t *kLanguageCodes[] = {L"en", L"zh-CN", L"ja"};
 constexpr int kDefaultLanguageIndex = 1;
+// Window size at 96 DPI; scaled with the monitor DPI.
+constexpr int kWindowWidth = 620;
+constexpr int kWindowHeight = 240;
 
 struct AppState {
     std::vector<ProcessInfo> processes;
@@ -113,6 +116,8 @@ inline std::unordered_map<std::uintptr_t, UiTextId> g_tooltipById;
 inline HWND g_mainWindow = nullptr;
 inline HWND g_activeTooltipControl = nullptr;
 inline HFONT g_hotkeyFont = nullptr;
+inline HFONT g_uiFont = nullptr;
+inline UINT g_dpi = 96; // DPI of the monitor the window is on; layout values are written for 96
 inline std::unordered_set<DWORD> g_knownPids;
 inline std::unordered_set<DWORD> g_autoHookAttempted;
 inline std::unordered_set<DWORD> g_hookedPids;
@@ -141,7 +146,11 @@ void selectUiLanguage(HWND hwnd, int index);
 void refreshUiText(HWND hwnd);
 void layoutControls(HWND hwnd);
 int getTextHeight(HWND hwnd, int fallback);
-HFONT createHotkeyFont(HWND reference);
+// DPI handling: the manifest declares PerMonitorV2, so pixel values written for 96 DPI go through scalePx.
+UINT queryWindowDpi(HWND hwnd);
+int scalePx(int px);
+// (Re)creates the UI and hotkey fonts for g_dpi and assigns them to every child control.
+void applyDpiFonts(HWND hwnd);
 HWND createTooltip(HWND parent);
 void addTooltip(HWND tooltip, HWND control, UiTextId textId);
 bool setTooltipId(HWND control, UiTextId textId);
@@ -160,6 +169,8 @@ void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel);
 bool selectProcessByPid(HWND hwnd, DWORD pid);
 controller::SharedConfig buildSharedConfig(float speed);
 float readSpeedFromEdit(HWND edit);
+// Saves the current target speed as controller.last_speed (no-op when unchanged).
+void rememberSpeed();
 void writeSpeedEdit(HWND hwnd);
 void syncProcessAllAudioFromCheckbox(HWND hwnd);
 void updateAutoHookCheckbox(HWND hwnd);

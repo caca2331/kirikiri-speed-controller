@@ -139,6 +139,12 @@ HRESULT STDMETHODCALLTYPE RenderClientReleaseBufferHook(IAudioRenderClient *clie
     }
     std::unique_lock<std::mutex> ctxLock(ctx->mutex);
 
+    // An exclusive-mode endpoint plays every requested frame; releasing fewer would play stale buffer data.
+    if (ctx->exclusive) {
+        ctxLock.unlock();
+        return g_origRenderReleaseBuffer(client, numFramesWritten, flags);
+    }
+
     // Format probes are COM round trips; run each at most once per stream instead of every period.
     if (!ctx->channelProbeDone) {
         ctx->channelProbeDone = true;
@@ -317,9 +323,16 @@ HRESULT STDMETHODCALLTYPE AudioClientInitializeHook(IAudioClient *client, AUDCLN
         KRKR_LOG_INFO(msg);
     }
     if (format) {
-        wasapi::maybeSetDefaultFormat(format);
+        const bool exclusive = (shareMode == AUDCLNT_SHAREMODE_EXCLUSIVE);
+        if (!exclusive) {
+            // An exclusive format is the device's, not the shared mix; it must not seed format guesses.
+            wasapi::maybeSetDefaultFormat(format);
+        }
         auto ctx = wasapi::createContextFromFormat(format);
-        if (!ctx->isPcm16 && !ctx->isPcm32 && !ctx->isFloat32) {
+        ctx->exclusive = exclusive;
+        if (ctx->exclusive) {
+            KRKR_LOG_INFO("WASAPI exclusive-mode stream; it is passed through unchanged");
+        } else if (!ctx->isPcm16 && !ctx->isPcm32 && !ctx->isFloat32) {
             KRKR_LOG_WARN("WASAPI format not PCM16/PCM32/Float32; processing disabled for this stream");
         }
         std::lock_guard<std::mutex> lock(g_ctxMutex);

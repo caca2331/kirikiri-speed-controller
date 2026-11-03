@@ -218,6 +218,13 @@ float readSpeedFromEdit(HWND edit) {
     return g_state.speed.currentSpeed;
 }
 
+void rememberSpeed() {
+    std::wstring error;
+    if (!controller::setLastSpeed(g_state.speed.currentSpeed, error)) {
+        KRKR_LOG_WARN(L"Failed to save last speed: " + error);
+    }
+}
+
 void writeSpeedEdit(HWND hwnd) {
     HWND edit = GetDlgItem(hwnd, kSpeedEditId);
     if (!edit) return;
@@ -734,6 +741,7 @@ void handleSpeedHotkey(HWND hwnd, SpeedHotkeyAction action) {
     syncProcessAllAudioFromCheckbox(hwnd);
     const std::wstring status = controller::applySpeedHotkey(g_state.speed, action);
     writeSpeedEdit(hwnd);
+    rememberSpeed();
     if (!g_hookedPids.empty()) {
         // Hotkeys are pressed in-game, so they target every hooked game rather than the dropdown selection.
         applySpeedToHookedProcesses(hwnd);
@@ -761,6 +769,7 @@ void handleApply(HWND hwnd) {
         return;
     }
     readSpeedFromEdit(editSpeed);
+    rememberSpeed();
     g_state.processAllAudio = (ignoreBgm && SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
     ProcessInfo proc;

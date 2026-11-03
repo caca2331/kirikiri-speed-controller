@@ -11,6 +11,7 @@ namespace {
 struct CliOptions {
     bool enableLog = false;
     float speed = 1.5f;
+    bool speedFromCli = false; // --speed overrides the remembered speed
     float bgmSeconds = 60.0f;
     std::filesystem::path launchPath;
     std::uint32_t stereoBgmMode = 1;
@@ -45,6 +46,7 @@ CliOptions parseArgs() {
             if (next(v)) {
                 try {
                     opts.speed = std::stof(v);
+                    opts.speedFromCli = true;
                 } catch (...) {}
             }
         } else if (arg == L"--mark-stereo-bgm") {
@@ -91,6 +93,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     auto opts = parseArgs();
     krkrspeed::controller::loadAutoHookConfig();
+    float lastSpeed = 0.0f;
+    if (!opts.speedFromCli && krkrspeed::controller::tryGetLastSpeed(lastSpeed)) {
+        opts.speed = lastSpeed;
+    }
     krkrspeed::ui::ControllerOptions controllerOpts{};
     controllerOpts.enableLog = opts.enableLog;
     controllerOpts.speed = opts.speed;

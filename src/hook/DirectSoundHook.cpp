@@ -329,10 +329,18 @@ DirectSoundHook::BufferPtr DirectSoundHook::findOrTrackBuffer(IDirectSoundBuffer
     DSBCAPS caps{};
     caps.dwSize = sizeof(caps);
     DWORD bytes = 0;
+    bool isPrimary = false;
     if (SUCCEEDED(self->GetCaps(&caps))) {
         bytes = caps.dwBufferBytes;
+        isPrimary = (caps.dwFlags & DSBCAPS_PRIMARYBUFFER) != 0;
     }
     BufferPtr info = makeBufferInfo(*fx, bytes, SharedSettingsManager::instance().snapshot().bgmSecondsGate);
+    if (isPrimary) {
+        // Only the x86 global Unlock detour sees the primary buffer (WRITEPRIMARY games). It holds the final
+        // mix, so it is tracked as passthrough, like CreateSoundBufferHook skips it.
+        info->isPcm16 = false;
+        info->stream.reset();
+    }
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto inserted = m_buffers.emplace(key, info);
@@ -349,6 +357,10 @@ DirectSoundHook::BufferPtr DirectSoundHook::findOrTrackBuffer(IDirectSoundBuffer
                   " bits=" + std::to_string(fx->wBitsPerSample) +
                   " ch=" + std::to_string(fx->nChannels) +
                   " sr=" + std::to_string(fx->nSamplesPerSec));
+    if (isPrimary) {
+        KRKR_LOG_INFO("DS Unlock: primary buffer is passed through buf=" + std::to_string(key));
+        return info;
+    }
     if (!info->isPcm16) {
         KRKR_LOG_WARN("DirectSound buffer format not PCM16 (after late track); skipping DSP. fmt=" +
                       std::to_string(info->formatTag) + " bits=" + std::to_string(info->bitsPerSample));
@@ -371,15 +383,8 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     settingsManager.pollSharedSettings();
     const SharedSettings settings = settingsManager.snapshot();
 
-    // Validate pointers; fall back to passthrough if unsafe.
-    auto ptrInvalid = [](LPVOID ptr, DWORD bytes) {
-        if (!ptr || bytes == 0) return false;
-        return IsBadReadPtr(ptr, bytes) || IsBadWritePtr(ptr, bytes);
-    };
-    if (ptrInvalid(pAudioPtr1, dwAudioBytes1) || ptrInvalid(pAudioPtr2, dwAudioBytes2)) {
-        KRKR_LOG_WARN("DirectSound UnlockHook detected invalid buffer pointers; falling back to passthrough");
-        return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
-    }
+    // The pointers are the regions DirectSound returned from Lock; no IsBadReadPtr/IsBadWritePtr probing
+    // (deprecated, costly on every Unlock, and able to swallow guard-page exceptions).
     const DWORD bytes1 = pAudioPtr1 ? dwAudioBytes1 : 0;
     const DWORD bytes2 = pAudioPtr2 ? dwAudioBytes2 : 0;
     if (bytes1 + bytes2 == 0) {

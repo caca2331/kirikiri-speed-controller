@@ -106,7 +106,6 @@ configure_and_build("x86" "${BUILD_X86}" "x86-windows" "Win32")
 
 stage("x86-controller" "${BUILD_X86}" "${DIST_ROOT}" "x86-windows"
       KrkrSpeedController.exe
-      SoundTouch.dll
       ui_texts.yaml
       process_blacklist.txt
 )
@@ -122,5 +121,11 @@ stage("x64" "${BUILD_X64}" "${DIST_ROOT}/x64" "x64-windows"
 )
 remove_stale_controller("${DIST_ROOT}/x86")
 remove_stale_controller("${DIST_ROOT}/x64")
+
+# Releases up to 1.2.1 shipped SoundTouch.dll beside the controller; it is only needed in x86/ and x64/ now.
+if(EXISTS "${DIST_ROOT}/SoundTouch.dll")
+    file(REMOVE "${DIST_ROOT}/SoundTouch.dll")
+    message(STATUS "Removed stale ${DIST_ROOT}/SoundTouch.dll")
+endif()
 
 message(STATUS "Dual-arch staging complete: ${DIST_ROOT} (controller) with ${DIST_ROOT}/x86 and ${DIST_ROOT}/x64")

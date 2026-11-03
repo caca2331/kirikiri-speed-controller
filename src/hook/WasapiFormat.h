@@ -25,6 +25,7 @@ struct StreamContext {
     bool formatGuessed = false;    // format came from the default mix format, not IAudioClient::Initialize
     bool channelProbeDone = false; // IAudioStreamVolume channel probe attempted
     bool formatProbeDone = false;  // GetMixFormat probe attempted
+    bool exclusive = false;        // AUDCLNT_SHAREMODE_EXCLUSIVE: the device plays whole periods, so never drop frames
     std::unique_ptr<AudioStreamProcessor> stream;
     AudioProcessResult processed; // reused DSP output buffer
     std::mutex mutex;

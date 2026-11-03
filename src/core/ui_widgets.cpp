@@ -4,6 +4,7 @@
 #include "../common/Logging.h"
 #include <algorithm>
 #include <cstring>
+#include <initializer_list>
 #include <iterator>
 
 namespace krkrspeed::ui::detail {
@@ -40,6 +41,53 @@ const std::wstring &resolveTooltipText(UiTextId id) {
         pos += kAppVersion.size();
     }
     return cached;
+}
+
+FARPROC user32Proc(const char *name) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    return user32 ? GetProcAddress(user32, name) : nullptr;
+}
+
+UINT screenDpi() {
+    HDC hdc = GetDC(nullptr);
+    const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+    if (hdc) {
+        ReleaseDC(nullptr, hdc);
+    }
+    return dpi > 0 ? static_cast<UINT>(dpi) : 96u;
+}
+
+// The system message font (Segoe UI / Microsoft YaHei UI, ...) at the given DPI.
+LOGFONTW messageFontAt(UINT dpi) {
+    using SystemParametersInfoForDpiFn = BOOL(WINAPI *)(UINT, UINT, PVOID, UINT, UINT);
+    static const auto spiForDpi =
+        reinterpret_cast<SystemParametersInfoForDpiFn>(user32Proc("SystemParametersInfoForDpi"));
+    NONCLIENTMETRICSW ncm{};
+    ncm.cbSize = sizeof(ncm);
+    if (spiForDpi && spiForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi)) {
+        return ncm.lfMessageFont;
+    }
+    LOGFONTW lf{};
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+        lf = ncm.lfMessageFont; // at the system DPI (Windows before 10 1607)
+    } else {
+        GetObjectW(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
+    }
+    if (lf.lfHeight != 0) {
+        lf.lfHeight = MulDiv(lf.lfHeight, static_cast<int>(dpi), static_cast<int>(screenDpi()));
+    } else {
+        lf.lfHeight = -MulDiv(9, static_cast<int>(dpi), 72);
+    }
+    return lf;
+}
+
+// Bold label font for the hotkey/info/tray labels: 8 pt + 2 pt, as the DEFAULT_GUI_FONT-based font was.
+HFONT createHotkeyFont(const LOGFONTW &base, UINT dpi) {
+    LOGFONTW lf = base;
+    lf.lfHeight = -(MulDiv(8, static_cast<int>(dpi), 72) + MulDiv(2, static_cast<int>(dpi), 72));
+    lf.lfWidth = 0;
+    lf.lfWeight = FW_BOLD;
+    return CreateFontIndirectW(&lf);
 }
 
 bool registerHotkey(HWND hwnd, int id, UINT vk) {
@@ -164,22 +212,26 @@ void refreshUiText(HWND hwnd) {
 void layoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
-    const int padding = 12;
-    const int labelWidth = 90;
-    const int labelGap = 5;
+    // All sizes are 96-DPI values scaled to the window's monitor.
+    const int padding = scalePx(12);
+    const int labelWidth = scalePx(90);
+    const int labelGap = scalePx(5);
     const int labelColumn = labelWidth + labelGap;
-    const int comboHeight = 24;
-    const int editWidth = 40;
-    const int buttonWidth = 120;
-    const int rowHeight = 28;
-    const int checkboxHeight = 20;
-    const int checkboxWidth = 20;
+    const int comboHeight = scalePx(24);
+    const int editWidth = scalePx(40);
+    const int buttonWidth = scalePx(120);
+    const int rowHeight = scalePx(28);
+    const int checkboxHeight = scalePx(20);
+    const int checkboxWidth = scalePx(20);
     const int statusHeight = comboHeight * 3;
+    const int textNudge = scalePx(2); // labels sit slightly lower than the control they describe
+    const int bgmLabelWidth = scalePx(90);
+    const int bgmCheckOffset = scalePx(94);
 
     int x = padding;
     int y = padding;
 
-    int comboWidth = static_cast<int>(rc.right) - labelColumn - buttonWidth - padding * 3 + 5;
+    int comboWidth = static_cast<int>(rc.right) - labelColumn - buttonWidth - padding * 3 + scalePx(5);
     if (comboWidth < 0) {
         comboWidth = 0;
     }
@@ -187,34 +239,35 @@ void layoutControls(HWND hwnd) {
     SetWindowPos(GetDlgItem(hwnd, kRefreshButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
                  SWP_NOZORDER);
     if (g_processLabel) {
-        SetWindowPos(g_processLabel, nullptr, x, y + 2, labelWidth, comboHeight, SWP_NOZORDER);
+        SetWindowPos(g_processLabel, nullptr, x, y + textNudge, labelWidth, comboHeight, SWP_NOZORDER);
     }
 
     y += rowHeight;
     if (g_speedLabel) {
-        SetWindowPos(g_speedLabel, nullptr, x, y + 2, labelWidth, comboHeight, SWP_NOZORDER);
+        SetWindowPos(g_speedLabel, nullptr, x, y + textNudge, labelWidth, comboHeight, SWP_NOZORDER);
     }
     SetWindowPos(GetDlgItem(hwnd, kSpeedEditId), nullptr, x + labelColumn, y, editWidth, comboHeight, SWP_NOZORDER);
     // Place ignore-BGM label and checkbox together
-    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmLabelId), nullptr, x + labelColumn + editWidth + padding, y + 2, 90, checkboxHeight,
-                 SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelColumn + editWidth + padding + 94, y, checkboxWidth, checkboxHeight,
-                 SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmLabelId), nullptr, x + labelColumn + editWidth + padding, y + textNudge,
+                 bgmLabelWidth, checkboxHeight, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelColumn + editWidth + padding + bgmCheckOffset, y,
+                 checkboxWidth, checkboxHeight, SWP_NOZORDER);
     if (g_autoHookLabel) {
-        const int autoHookGap = 10;
-        const int innerGap = 6;
-        const int delayGap = 10;
-        const int autoHookX = x + labelColumn + editWidth + padding + 94 + checkboxWidth + autoHookGap;
-        const int autoHookLabelWidth = 130;
-        SetWindowPos(g_autoHookLabel, nullptr, autoHookX, y + 2, autoHookLabelWidth, checkboxHeight, SWP_NOZORDER);
+        const int autoHookGap = scalePx(10);
+        const int innerGap = scalePx(6);
+        const int delayGap = scalePx(10);
+        const int autoHookX = x + labelColumn + editWidth + padding + bgmCheckOffset + checkboxWidth + autoHookGap;
+        const int autoHookLabelWidth = scalePx(130);
+        SetWindowPos(g_autoHookLabel, nullptr, autoHookX, y + textNudge, autoHookLabelWidth, checkboxHeight, SWP_NOZORDER);
         if (g_autoHookCheck) {
             const int autoHookCheckX = autoHookX + autoHookLabelWidth + innerGap;
             SetWindowPos(g_autoHookCheck, nullptr, autoHookCheckX, y, checkboxWidth, checkboxHeight, SWP_NOZORDER);
             if (g_autoHookDelayLabel) {
-                const int delayLabelWidth = 125;
+                const int delayLabelWidth = scalePx(125);
                 const int delayCheckX = rc.right - padding - checkboxWidth;
                 const int delayLabelX = delayCheckX - delayGap - delayLabelWidth;
-                SetWindowPos(g_autoHookDelayLabel, nullptr, delayLabelX, y + 2, delayLabelWidth, checkboxHeight, SWP_NOZORDER);
+                SetWindowPos(g_autoHookDelayLabel, nullptr, delayLabelX, y + textNudge, delayLabelWidth, checkboxHeight,
+                             SWP_NOZORDER);
                 if (g_autoHookDelayCheck) {
                     SetWindowPos(g_autoHookDelayCheck, nullptr, delayCheckX, y, checkboxWidth, checkboxHeight, SWP_NOZORDER);
                 }
@@ -226,21 +279,22 @@ void layoutControls(HWND hwnd) {
     y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, statusHeight, SWP_NOZORDER);
 
-    const int trayRowY = y + statusHeight + 6;
+    const int trayRowY = y + statusHeight + scalePx(6);
     if (g_minimizeToTrayLabel && g_minimizeToTrayCheck) {
-        int trayLabelWidth = rc.right - padding * 2 - checkboxWidth - 6;
-        trayLabelWidth = std::min(trayLabelWidth, 180);
-        if (trayLabelWidth < 80) trayLabelWidth = 80;
-        SetWindowPos(g_minimizeToTrayLabel, nullptr, x, trayRowY + 2, trayLabelWidth, checkboxHeight, SWP_NOZORDER);
-        SetWindowPos(g_minimizeToTrayCheck, nullptr, x + trayLabelWidth + 6, trayRowY, checkboxWidth, checkboxHeight,
+        const int trayGap = scalePx(6);
+        int trayLabelWidth = rc.right - padding * 2 - checkboxWidth - trayGap;
+        trayLabelWidth = std::min(trayLabelWidth, scalePx(180));
+        trayLabelWidth = std::max(trayLabelWidth, scalePx(80));
+        SetWindowPos(g_minimizeToTrayLabel, nullptr, x, trayRowY + textNudge, trayLabelWidth, checkboxHeight, SWP_NOZORDER);
+        SetWindowPos(g_minimizeToTrayCheck, nullptr, x + trayLabelWidth + trayGap, trayRowY, checkboxWidth, checkboxHeight,
                      SWP_NOZORDER);
     }
 
-    const int linkPadding = 8;
+    const int linkPadding = scalePx(8);
     const int comboX = rc.right - buttonWidth - padding;
     const int comboY = rc.bottom - padding - comboHeight;
     const int hotkeyWidth = static_cast<int>(buttonWidth * 0.8f);
-    const int infoWidth = std::max(24, hotkeyWidth / 3);
+    const int infoWidth = std::max(scalePx(24), hotkeyWidth / 3);
     const int hotkeyX = comboX - linkPadding - hotkeyWidth;
     const int infoX = hotkeyX - linkPadding - infoWidth;
     int linkWidth = infoX - x - linkPadding;
@@ -294,33 +348,56 @@ int getTextHeight(HWND hwnd, int fallback) {
     return height;
 }
 
-HFONT createHotkeyFont(HWND reference) {
-    if (!reference) return nullptr;
-    HFONT baseFont = reinterpret_cast<HFONT>(SendMessageW(reference, WM_GETFONT, 0, 0));
-    if (!baseFont) {
-        baseFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    }
-    LOGFONTW lf{};
-    if (baseFont && GetObjectW(baseFont, sizeof(lf), &lf) != 0) {
-        HDC hdc = GetDC(reference);
-        const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
-        if (hdc) {
-            ReleaseDC(reference, hdc);
+UINT queryWindowDpi(HWND hwnd) {
+    using GetDpiForWindowFn = UINT(WINAPI *)(HWND);
+    static const auto getDpiForWindow = reinterpret_cast<GetDpiForWindowFn>(user32Proc("GetDpiForWindow"));
+    if (getDpiForWindow && hwnd) {
+        const UINT dpi = getDpiForWindow(hwnd);
+        if (dpi != 0) {
+            return dpi;
         }
-        const int delta = MulDiv(2, dpi, 72);
-        int height = lf.lfHeight;
-        if (height == 0) {
-            height = -MulDiv(11, dpi, 72);
-        } else {
-            if (height < 0) height = -height;
-            height += delta;
-            height = -height;
-        }
-        lf.lfHeight = height;
-        lf.lfWeight = FW_BOLD;
-        return CreateFontIndirectW(&lf);
     }
-    return nullptr;
+    return screenDpi();
+}
+
+int scalePx(int px) {
+    return MulDiv(px, static_cast<int>(g_dpi), 96);
+}
+
+void applyDpiFonts(HWND hwnd) {
+    if (!hwnd) return;
+    const LOGFONTW base = messageFontAt(g_dpi);
+    HFONT uiFont = CreateFontIndirectW(&base);
+    HFONT hotkeyFont = createHotkeyFont(base, g_dpi);
+    if (!uiFont) {
+        uiFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+    EnumChildWindows(
+        hwnd,
+        [](HWND child, LPARAM font) -> BOOL {
+            SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(font), FALSE);
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(uiFont));
+    HFONT labelFont = hotkeyFont ? hotkeyFont : uiFont;
+    for (HWND label : {g_hotkeyLabel, g_infoLabel, g_minimizeToTrayLabel}) {
+        if (label) {
+            SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), FALSE);
+        }
+    }
+    if (g_tooltip) {
+        SendMessageW(g_tooltip, TTM_SETMAXTIPWIDTH, 0, scalePx(360));
+    }
+    // The controls no longer reference the previous fonts.
+    if (g_uiFont && g_uiFont != uiFont) {
+        DeleteObject(g_uiFont);
+    }
+    if (g_hotkeyFont && g_hotkeyFont != hotkeyFont) {
+        DeleteObject(g_hotkeyFont);
+    }
+    g_uiFont = (uiFont == GetStockObject(DEFAULT_GUI_FONT)) ? nullptr : uiFont;
+    g_hotkeyFont = hotkeyFont;
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 HWND createTooltip(HWND parent) {
@@ -328,7 +405,7 @@ HWND createTooltip(HWND parent) {
                                    WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                                    parent, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (tooltip) {
-        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
+        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, scalePx(360));
         SendMessageW(tooltip, TTM_ACTIVATE, TRUE, 0);
         SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     } else {

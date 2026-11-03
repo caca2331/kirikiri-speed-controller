@@ -24,6 +24,9 @@ jobs:
         run: cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Check binaries (imports, manifest)
+        shell: pwsh
+        run: ./.github/scripts/check_binaries.ps1 -BinDir build/Release
 
   package:
     name: Package (dist)
@@ -33,6 +36,19 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build both architectures and stage dist
         run: cmake -P cmake/dual_arch.cmake
+      - name: Check staged layout
+        shell: pwsh
+        run: |
+          $root = 'dist/KrkrSpeedController'
+          if (Test-Path "$root/SoundTouch.dll") { throw 'SoundTouch.dll must not be staged beside the controller' }
+          foreach ($f in 'KrkrSpeedController.exe', 'ui_texts.yaml', 'process_blacklist.txt') {
+            if (-not (Test-Path "$root/$f")) { throw "missing $f" }
+          }
+          foreach ($arch in 'x86', 'x64') {
+            foreach ($f in 'krkr_injector.exe', 'krkr_speed_hook.dll', 'SoundTouch.dll') {
+              if (-not (Test-Path "$root/$arch/$f")) { throw "missing $arch/$f" }
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: KrkrSpeedController

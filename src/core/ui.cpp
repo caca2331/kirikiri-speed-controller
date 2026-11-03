@@ -8,6 +8,10 @@
 #include <limits>
 #include <memory>
 
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
 namespace krkrspeed::ui {
 namespace {
 using namespace detail;
@@ -43,6 +47,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     switch (message) {
     case WM_CREATE: {
         g_mainWindow = hwnd;
+        g_dpi = queryWindowDpi(hwnd);
         ensureUiTextLoaded();
         RECT rcClient{};
         GetClientRect(hwnd, &rcClient);
@@ -109,7 +114,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                           12, 96, 400, 20, hwnd,
                                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
         if (statusEdit) {
-            SendMessageW(statusEdit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
             setStatus(statusEdit, L"Ready");
         }
 
@@ -123,9 +127,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                                 12, 0, 20, 20, hwnd,
                                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMinimizeToTrayCheckId)),
                                                 nullptr, nullptr);
-        if (g_minimizeToTrayLabel) {
-            SendMessageW(g_minimizeToTrayLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-        }
         if (g_minimizeToTrayCheck) {
             SendMessageW(g_minimizeToTrayCheck, BM_SETCHECK,
                          g_state.minimizeToTrayOnClose ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -146,36 +147,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                      12, 124, 500, 20,
                                      hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLinkId)), nullptr, nullptr);
         }
-        if (g_link) {
-            SendMessageW(g_link, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-        }
         g_hotkeyLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelHotkey).c_str(),
                                         WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                         12, 124, 60, 24, hwnd, nullptr, nullptr, nullptr);
         g_infoLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelInfo).c_str(),
                                       WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                       12, 124, 40, 24, hwnd, nullptr, nullptr, nullptr);
-        if (g_infoLabel) {
-            SendMessageW(g_infoLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-        }
-        if (g_hotkeyLabel) {
-            if (g_hotkeyFont) {
-                DeleteObject(g_hotkeyFont);
-                g_hotkeyFont = nullptr;
-            }
-            g_hotkeyFont = createHotkeyFont(g_processLabel ? g_processLabel : g_hotkeyLabel);
-            HFONT labelFont = g_hotkeyFont;
-            if (!labelFont) {
-                labelFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            }
-            SendMessageW(g_hotkeyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
-            if (g_infoLabel) {
-                SendMessageW(g_infoLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
-            }
-            if (g_minimizeToTrayLabel) {
-                SendMessageW(g_minimizeToTrayLabel, WM_SETFONT, reinterpret_cast<WPARAM>(labelFont), TRUE);
-            }
-        }
+        // Message font for every control, bold label font for hotkey/info/tray, both at the window's DPI.
+        applyDpiFonts(hwnd);
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
@@ -252,6 +231,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_SIZE:
         layoutControls(hwnd);
         break;
+    case WM_DPICHANGED: {
+        // Moved to a monitor with another scale factor: rebuild fonts, take the suggested rect, re-layout.
+        g_dpi = HIWORD(wParam) ? HIWORD(wParam) : queryWindowDpi(hwnd);
+        applyDpiFonts(hwnd);
+        const auto *suggested = reinterpret_cast<const RECT *>(lParam);
+        if (suggested) {
+            SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                         suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        layoutControls(hwnd);
+        return 0;
+    }
     case WM_COMMAND: {
         const WORD id = LOWORD(wParam);
         if (id == kRefreshButtonId && HIWORD(wParam) == BN_CLICKED) {
@@ -269,6 +260,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (editSpeed) {
                 readSpeedFromEdit(editSpeed);
                 writeSpeedEdit(hwnd);
+                rememberSpeed();
                 applySpeedToHookedProcesses(hwnd);
             }
         } else if (id == kIgnoreBgmCheckId && HIWORD(wParam) == BN_CLICKED) {
@@ -395,6 +387,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             DeleteObject(g_hotkeyFont);
             g_hotkeyFont = nullptr;
         }
+        if (g_uiFont) {
+            DeleteObject(g_uiFont);
+            g_uiFont = nullptr;
+        }
         KRKR_LOG_INFO("KrkrSpeedController window destroyed, exiting.");
         PostQuitMessage(0);
         break;
@@ -443,11 +439,16 @@ int runController(HINSTANCE hInstance, int nCmdShow) {
     const auto &title = ui_text::UiText(UiTextId::WindowTitle);
     HWND hwnd = CreateWindowExW(0, CLASS_NAME, title.c_str(),
                                 WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
-                                CW_USEDEFAULT, CW_USEDEFAULT, 620, 240,
+                                CW_USEDEFAULT, CW_USEDEFAULT, kWindowWidth, kWindowHeight,
                                 nullptr, nullptr, hInstance, nullptr);
     if (!hwnd) {
         KRKR_LOG_ERROR("Failed to create main window");
         return 0;
+    }
+    if (g_dpi != 96) {
+        // The size above is for 96 DPI; WM_CREATE has read the monitor's DPI by now.
+        SetWindowPos(hwnd, nullptr, 0, 0, scalePx(kWindowWidth), scalePx(kWindowHeight),
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     ShowWindow(hwnd, nCmdShow);

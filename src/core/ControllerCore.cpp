@@ -110,7 +110,8 @@ bool runInjector(const std::filesystem::path &injector, DWORD pid, const std::fi
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
-    BOOL ok = CreateProcessW(nullptr, args.data(), nullptr, nullptr, FALSE, 0, nullptr,
+    // The injector is a console program; without CREATE_NO_WINDOW every injection flashes a console window.
+    BOOL ok = CreateProcessW(nullptr, args.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
                              injector.parent_path().c_str(), &si, &pi);
     if (!ok) {
         error = L"CreateProcess for injector failed: " + std::to_wstring(GetLastError());

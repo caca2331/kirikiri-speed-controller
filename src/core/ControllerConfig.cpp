@@ -19,6 +19,7 @@ std::vector<AutoHookEntry> g_processBgmEntries;
 std::mutex g_autoHookMutex;
 bool g_minimizeToTrayOnClose = false;
 std::wstring g_uiLanguage; // empty = never chosen; the UI then uses its default language
+float g_lastSpeed = 0.0f;  // 0 = never saved
 std::unordered_set<std::wstring> g_processBlacklist;
 std::filesystem::file_time_type g_processBlacklistStamp{};
 std::mutex g_processBlacklistMutex;
@@ -208,6 +209,12 @@ bool saveAutoHookConfig(std::wstring &error) {
     if (!g_uiLanguage.empty()) {
         out << "  ui_language: \"" << escapeYamlString(g_uiLanguage) << "\"\n";
     }
+    if (g_lastSpeed > 0.0f) {
+        std::ostringstream speed;
+        speed.setf(std::ios::fixed);
+        speed << std::setprecision(2) << g_lastSpeed;
+        out << "  last_speed: " << speed.str() << "\n";
+    }
     out << "auto_hook:\n";
     for (const auto &entry : g_autoHookEntries) {
         out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
@@ -231,6 +238,7 @@ void loadAutoHookConfig() {
     g_processBgmEntries.clear();
     g_minimizeToTrayOnClose = false;
     g_uiLanguage.clear();
+    g_lastSpeed = 0.0f;
     const auto path = autoHookConfigPath();
     if (path.empty() || !std::filesystem::exists(path)) {
         return;
@@ -315,6 +323,15 @@ void loadAutoHookConfig() {
                 g_minimizeToTrayOnClose = (lower == "true" || lower == "1" || lower == "yes" || lower == "on");
             } else if (key == "ui_language") {
                 g_uiLanguage = fromUtf8(unescapeYamlString(value));
+            } else if (key == "last_speed") {
+                try {
+                    const float parsed = std::stof(value);
+                    if (std::isfinite(parsed) && parsed > 0.0f) {
+                        g_lastSpeed = clampSpeed(parsed);
+                    }
+                } catch (...) {
+                    // Ignore malformed speed values.
+                }
             }
             continue;
         }
@@ -463,6 +480,28 @@ bool setUiLanguage(const std::wstring &langCode, std::wstring &error) {
         return true;
     }
     g_uiLanguage = langCode;
+    return saveAutoHookConfig(error);
+}
+
+bool tryGetLastSpeed(float &outSpeed) {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    if (g_lastSpeed <= 0.0f) {
+        return false;
+    }
+    outSpeed = g_lastSpeed;
+    return true;
+}
+
+bool setLastSpeed(float speed, std::wstring &error) {
+    if (!std::isfinite(speed)) {
+        return true;
+    }
+    const float value = roundSpeed(clampSpeed(speed));
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    if (std::fabs(value - g_lastSpeed) < 0.001f) {
+        return true;
+    }
+    g_lastSpeed = value;
     return saveAutoHookConfig(error);
 }
 

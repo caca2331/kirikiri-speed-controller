@@ -82,6 +82,10 @@ bool setMinimizeToTrayOnClose(bool enabled, std::wstring &error);
 // UI language code saved in krkr_speed_config.yaml ("en", "zh-CN", "ja"); empty if never chosen.
 std::wstring getUiLanguage();
 bool setUiLanguage(const std::wstring &langCode, std::wstring &error);
+// Last speed set in the controller (controller.last_speed); false if none is saved. --speed takes precedence.
+bool tryGetLastSpeed(float &outSpeed);
+// Saves the speed when it differs from the stored one.
+bool setLastSpeed(float speed, std::wstring &error);
 bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t processBgmEntryCount();

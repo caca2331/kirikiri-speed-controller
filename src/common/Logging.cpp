@@ -28,7 +28,10 @@ struct LoggerState {
     bool initialized = false;
     std::atomic<bool> enabled{false};
     std::optional<std::filesystem::path> logDirOverride;
+    std::chrono::steady_clock::time_point lastFlush{};
 };
+
+constexpr std::chrono::milliseconds kFlushInterval{1000};
 
 std::string levelToString(LogLevel level) {
     switch (level) {
@@ -202,7 +205,15 @@ void writeLine(LoggerState &stateRef, LogLevel level, const std::string &line) {
     if (!stateRef.stream.is_open()) {
         return;
     }
-    stateRef.stream << "[" << currentTimestamp() << "] [" << levelToString(level) << "] " << line << std::endl;
+    stateRef.stream << "[" << currentTimestamp() << "] [" << levelToString(level) << "] " << line << '\n';
+    // Flushing every line is the expensive part of logging. Warnings and errors (including the hook's crash
+    // breadcrumbs) flush at once and carry the buffered lines before them; otherwise flush at most once per
+    // interval, so a hard kill loses at most that much and the file still updates while a game runs.
+    const auto now = std::chrono::steady_clock::now();
+    if (level == LogLevel::Warn || level == LogLevel::Error || now - stateRef.lastFlush >= kFlushInterval) {
+        stateRef.stream.flush();
+        stateRef.lastFlush = now;
+    }
 }
 
 } // namespace

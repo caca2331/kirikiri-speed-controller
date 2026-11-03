@@ -160,9 +160,11 @@ if(WIN32)
             src/core/ControllerCore.cpp
             src/core/ControllerConfig.cpp
             src/core/krkr_speed_controller.rc
+            src/core/KrkrSpeedController.manifest
         )
         target_link_libraries(KrkrSpeedController PRIVATE krkr_common comctl32 uuid)
-        copy_soundtouch_runtime(KrkrSpeedController)
+        # No SoundTouch runtime here: the controller never calls into it, and the x86 hook it preflight-loads
+        # delay-loads SoundTouch.dll from its own folder.
         copy_ui_texts_runtime(KrkrSpeedController)
         copy_process_blacklist_runtime(KrkrSpeedController)
     endif()
