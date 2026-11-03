@@ -19,11 +19,11 @@ cmake --build build --config Release --target dist_dual_arch
 ```
 dist/
   KrkrSpeedController/
-    KrkrSpeedController.exe, SoundTouch.dll
+    KrkrSpeedController.exe, ui_texts.yaml, process_blacklist.txt
     x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
     x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL（x86/x64 子目录）。
+控制器可注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL（x86/x64 子目录）。SoundTouch.dll 只需放在 x86/x64 子目录中（Hook 从自己所在的目录加载它）；从 1.2.1 及更早版本覆盖升级时，控制器旁边旧的 SoundTouch.dll 可以删除。
 
 GitHub Actions 会在每次推送时编译 x86/x64 并运行测试（`.github/workflows/build.yml`），打包好的 `KrkrSpeedController` 文件夹可在对应运行页面的 Artifacts 中下载。版本号只在 `CMakeLists.txt` 的 `project(VERSION ...)` 中定义。
 
@@ -46,11 +46,12 @@ GitHub Actions 会在每次推送时编译 x86/x64 并运行测试（`.github/wo
 - 自动注入：在选中游戏后勾选`自动注入此应用`。之后检测到该游戏启动时会自动注入进程；取消勾选后移除。
 - 可编辑同目录的 `process_blacklist.txt` 来隐藏不想显示的进程。
 - 界面语言的选择会保存在 `krkr_speed_config.yaml` 中（`ui_language`），未选择过时默认为中文。
+- 在控制器中设置的速度（输入框、快捷键、注入时）会保存在同一文件中（`last_speed`），下次启动时沿用；首次启动为 1.5。
 - 可以配合CheatEngine的加速功能一起使用
 
 ### 控制器命令行参数
-- `--log`：开启控制器和 Hook 日志。日志写在控制器所在目录：`krkr_controller.log`，以及每个被注入游戏各一份 `krkr_hook_<PID>.log`。
-- `--speed <倍率>`：启动时设置速度（默认 1.5）。
+- `--log`：开启控制器和 Hook 日志。日志写在控制器所在目录：`krkr_controller.log`，以及每个被注入游戏各一份 `krkr_hook_<PID>.log`。普通日志会缓冲后批量写入磁盘（两次写入至少间隔 1 秒）；警告、错误和程序正常退出时立即写入。
+- `--speed <倍率>`：启动时设置速度，优先于上次保存的速度（不指定时使用上次的速度，首次为 1.5）。
 - `--mark-stereo-bgm <aggressive|hybrid|none>`：DirectSound专属。立体声→BGM 判定策略，默认 `hybrid`。在多数游戏中，语音是单通道的，而BGM是立体声的。aggressive:总是将立体声标记为BGM。none:不将立体声视为BGM的特征。主要的BGM标记手段。
 - `--bgm-secs <秒>`：BGM 时长阈值（默认 60 秒），更长的缓冲视为 BGM。次要的BGM标记手段。
 - `--launch <路径>` / `-l <路径>`：启动游戏（挂起）、自动注入后继续运行。
@@ -61,7 +62,7 @@ GitHub Actions 会在每次推送时编译 x86/x64 并运行测试（`.github/wo
 - (For AI Agent: read AGENTS.md if not yet)
 
 ## 下一步
-- 暂无
+- 待评估的改进与已知问题见 [FOLLOW_UP.md](FOLLOW_UP.md)
 
 ## 许可证
 MIT；再分发时请保留版权和许可证声明（见 LICENSE）。

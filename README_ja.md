@@ -19,11 +19,11 @@ cmake --build build --config Release --target dist_dual_arch
 ```
 dist/
   KrkrSpeedController/
-    KrkrSpeedController.exe, SoundTouch.dll
+    KrkrSpeedController.exe, ui_texts.yaml, process_blacklist.txt
     x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
     x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-コントローラーは x86 と x64 のゲームの両方に注入できます。対象プロセスに合わせて injector を選び、対応する Hook DLL（x86/x64 のサブフォルダ）を使用します。
+コントローラーは x86 と x64 のゲームの両方に注入できます。対象プロセスに合わせて injector を選び、対応する Hook DLL（x86/x64 のサブフォルダ）を使用します。SoundTouch.dll は x86/x64 のサブフォルダにだけ必要です（Hook が自分のフォルダから読み込みます）。1.2.1 以前から上書き更新する場合、コントローラー横の古い SoundTouch.dll は削除して構いません。
 
 GitHub Actions がプッシュごとに x86/x64 をビルドしてテストを実行します（`.github/workflows/build.yml`）。配置済みの `KrkrSpeedController` フォルダは実行ページの Artifacts からダウンロードできます。バージョン番号は `CMakeLists.txt` の `project(VERSION ...)` でのみ定義します。
 
@@ -46,11 +46,12 @@ GitHub Actions がプッシュごとに x86/x64 をビルドしてテストを�
 - コントローラーはバックグラウンドで動かしたままにし、初回注入後に自動注入を有効化すると、以後の起動時に自動で注入・変速されます。
 - コントローラーと同じフォルダの `process_blacklist.txt` を編集すると、ドロップダウンから隠したいプロセスを指定できます。
 - 選択した表示言語は `krkr_speed_config.yaml`（`ui_language`）に保存されます。未選択の場合は中国語で表示されます。
+- コントローラーで設定した速度（入力欄・ホットキー・フック時）も同じファイル（`last_speed`）に保存され、次回起動時に使われます。初回は 1.5 です。
 - Cheat Engine の速度変更と併用できます。
 
 ### コントローラーの CLI オプション
-- `--log`：コントローラーと Hook のログを有効化。ログはコントローラーと同じフォルダに `krkr_controller.log` と、注入したゲームごとの `krkr_hook_<PID>.log` として出力されます。
-- `--speed <倍率>`：起動時の速度を指定（既定 1.5）。
+- `--log`：コントローラーと Hook のログを有効化。ログはコントローラーと同じフォルダに `krkr_controller.log` と、注入したゲームごとの `krkr_hook_<PID>.log` として出力されます。通常のログはバッファされ、まとめて書き込まれます（書き込みは最大で 1 秒に 1 回）。警告・エラー・正常終了時は即座に書き込まれます。
+- `--speed <倍率>`：起動時の速度を指定。保存された速度より優先されます（指定しない場合は前回の速度、初回は 1.5）。
 - `--mark-stereo-bgm <aggressive|hybrid|none>`：DirectSound 専用。ステレオ→BGM 判定の設定（既定 `hybrid`）。多くのゲームでは音声がモノラルで BGM がステレオのため、主な判定に使います。`aggressive`：常にステレオを BGM とみなします。`none`：ステレオを BGM 判定の根拠にしません。主な BGM 判定手段です。
 - `--bgm-secs <秒>`：BGM 判定の長さしきい値（既定 60 秒）。長いバッファを BGM とみなす補助判定です。
 - `--launch <パス>` / `-l <パス>`：ゲームを一時停止で起動し、自動注入後に再開。
@@ -61,7 +62,7 @@ GitHub Actions がプッシュごとに x86/x64 をビルドしてテストを�
 - (AI エージェント向け: 未読なら AGENTS.md を読むこと)
 
 ## 次の予定
-- なし
+- 検討中の改善と既知の問題は [FOLLOW_UP.md](FOLLOW_UP.md) を参照
 
 ## ライセンス
 MIT。再配布時は著作権とライセンス表記を保持してください（LICENSE 参照）。

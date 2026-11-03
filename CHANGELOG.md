@@ -8,6 +8,10 @@
 - Buffers that are not sped up keep the game's own frequency (it is only restored once after we stop processing a buffer)
 - x86 Unlock detour validates the function prologue and routes through the trampoline before going live
 - A missing or incompatible SoundTouch.dll disables audio processing instead of crashing the game (delay-load failures are SEH exceptions)
+- Injection no longer flashes a console window (the injector runs with `CREATE_NO_WINDOW`)
+- x64 injection: a successful `LoadLibraryW` whose module handle has zero low 32 bits is no longer reported as a failure; an exit code of 0 is checked against the target's module list
+- WASAPI exclusive-mode streams are passed through; dropping frames there would play stale buffer data
+- x86 DirectSound: the primary buffer (seen by the global Unlock detour in games that write it directly) is passed through instead of being time-stretched
 ### Changed
 - SoundTouch.dll is delay-loaded from the hook folder; the hook and SoundTouch.dll are copied next to the game only as a fallback (an existing SoundTouch.dll there is never overwritten)
 - Import hooks are installed synchronously in DllMain, so `--launch` games are hooked before their first instruction runs
@@ -20,12 +24,19 @@
 - Process list looks up window titles in one pass instead of one scan per process
 - Audio paths reuse their output buffers instead of allocating on every Unlock/ReleaseBuffer
 - The version is defined once in `CMakeLists.txt` (`project(VERSION)`) and generated into `KrkrVersion.h`
+- Controller UI uses Common Controls v6 (themed controls; the GitHub link is a real clickable link) and the system message font
+- The controller is per-monitor DPI aware (PerMonitorV2): window size, layout and fonts scale with the monitor and follow moves between monitors
+- Log lines end with `'\n'`; the file is flushed on warnings/errors and otherwise at most once per second (was: after every line)
+- DirectSound Unlock no longer probes the locked regions with `IsBadReadPtr`/`IsBadWritePtr`
+- `dist` no longer contains SoundTouch.dll beside the controller (only in `x86/` and `x64/`); staging removes a stale copy
 ### Added
 - DSP unit tests (`-DBUILD_TESTS=ON`, `ctest`); they also build on non-Windows hosts with a fallback DSP
 - Unit tests for the WASAPI frame-drop budget (`FrameDropBudget.h`) and for buffer reuse
 - GitHub Actions workflow: x86/x64 build + tests on every push, staged `dist` folder uploaded as an artifact
 - The selected UI language is remembered in `krkr_speed_config.yaml` (`ui_language`)
 - Shared settings carry the controller version; the hook log warns when controller and hook versions differ
+- The last speed set in the controller is remembered in `krkr_speed_config.yaml` (`last_speed`); `--speed` takes precedence
+- CI checks the built binaries (controller does not import SoundTouch.dll, the hook delay-loads it, the controller manifest is embedded) and the staged `dist` layout
 
 ## [1.2.1] - 2026-01-12
 ### Added

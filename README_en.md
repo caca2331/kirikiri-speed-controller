@@ -19,11 +19,11 @@ cmake --build build --config Release --target dist_dual_arch
 ```
 dist/
   KrkrSpeedController/
-    KrkrSpeedController.exe, SoundTouch.dll
+    KrkrSpeedController.exe, ui_texts.yaml, process_blacklist.txt
     x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
     x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-The controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the arch subfolder.
+The controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the arch subfolder. SoundTouch.dll only needs to be in the x86/x64 folders (the hook loads it from its own folder); when upgrading over 1.2.1 or older, the old SoundTouch.dll beside the controller can be deleted.
 
 GitHub Actions builds x86/x64 and runs the tests on every push (`.github/workflows/build.yml`); the staged `KrkrSpeedController` folder can be downloaded from the run's Artifacts. The version number is defined only in `project(VERSION ...)` in `CMakeLists.txt`.
 
@@ -46,11 +46,12 @@ GitHub Actions builds x86/x64 and runs the tests on every push (`.github/workflo
 - Keep the controller running in the background; after the first injection, enable auto-hook so future launches are injected and sped up automatically.
 - Edit `process_blacklist.txt` beside the controller to hide processes from the process selection dropdown.
 - The UI language you pick is saved in `krkr_speed_config.yaml` (`ui_language`); until you pick one, Chinese is used.
+- The speed you set in the controller (speed box, hotkeys, Hook) is saved in the same file (`last_speed`) and used on the next start; the first start uses 1.5.
 - Can be used together with Cheat Engine speed hacks.
 
 ### Controller CLI options
-- `--log` : enable logging for controller + hook. Logs are written beside the controller: `krkr_controller.log`, plus one `krkr_hook_<PID>.log` per hooked game.
-- `--speed <value>` : set the initial speed on startup (default 1.5).
+- `--log` : enable logging for controller + hook. Logs are written beside the controller: `krkr_controller.log`, plus one `krkr_hook_<PID>.log` per hooked game. Regular lines are buffered and written in batches (at most one write per second); warnings, errors and a normal exit write at once.
+- `--speed <value>` : set the initial speed on startup; takes precedence over the saved speed (without it, the last speed is used; 1.5 on first start).
 - `--mark-stereo-bgm <aggressive|hybrid|none>` : DirectSound only. Stereo→BGM heuristic (default `hybrid`). In many games voices are mono and BGMs are stereo. `aggressive`: always mark stereo as BGM. `none`: never treat stereo as a BGM signal. Primary BGM labeling method.
 - `--bgm-secs <seconds>` : BGM length gate (default 60s); longer buffers treated as BGM. Secondary way to label bgm.
 - `--launch <path>` / `-l <path>` : start a game suspended, inject automatically, then resume.
@@ -61,7 +62,7 @@ GitHub Actions builds x86/x64 and runs the tests on every push (`.github/workflo
 - (For AI Agent: read AGENTS.md if not yet)
 
 ## Next Step
-- None.
+- Improvements still under consideration and known issues: see [FOLLOW_UP.md](FOLLOW_UP.md)
 
 ## License
 MIT. Include the copyright and license notice when redistributing (see LICENSE).

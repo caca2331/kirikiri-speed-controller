@@ -47,7 +47,7 @@ fallback for untracked audio APIs (currently anything not routed through DirectS
 
 ### Route B — Voice/BGM indistinguishable (WASAPI‑style)
 - Used when no tracked interface is active (currently only DirectSound).
-- Always process PCM16 audio (no BGM gate).
+- Always process shared-mode PCM16/PCM32/float32 audio in its native format (no BGM gate). Exclusive-mode streams are passed through: the device plays every requested frame, so dropping frames would play stale data.
 - Hook points: `IAudioClient::Initialize` → `IAudioRenderClient::GetBuffer/ReleaseBuffer`.
 - Per `ReleaseBuffer`:
   1) Compute `effectiveFrames` via the accumulator (`targetFrames/outFrames`) so long‑term output tracks `sum(inputFrames / speed)`.
@@ -65,26 +65,33 @@ fallback for untracked audio APIs (currently anything not routed through DirectS
   - Always `GetFrequency` and `SetFrequency` if mismatch (overrides games that keep resetting frequency).
   - AppliedSpeed = DesiredFreq / baseFreq; feed this to SoundTouch (pitch mode) in AudioStreamProcessor.
 - DSP result is written back to the locked regions; tail is kept in Cbuffer (not re‑DSPed).
+- Interception: each device/buffer created through the hooked `DirectSoundCreate*` gets a shadow vtable (shared per original vtable). On x86 an inline detour on dsound's Unlock also catches buffers created before injection; those are tracked lazily, and the primary buffer is passed through. x64 has no such detour, so devices created before injection are not hooked (see FOLLOW_UP.md).
+- The locked regions are trusted as returned by Lock (no `IsBadReadPtr`/`IsBadWritePtr` probing).
 - Logs: `--log` enables; the controller writes `krkr_controller.log`, each hooked process `krkr_hook_<pid>.log` (directory from the `%TEMP%/krkr_log_dir.txt` hint, UTF-8).
 
 ## 7. Controller (KrkrSpeedController.exe)
 - Enumerates visible processes, writes shared settings (speed, gates, stereo‑BGM mode, process‑all) to per‑PID shared memory, launches injector, and reports status.
-- CLI highlights: `--log`, `--debug-audio-log`, `--process-all-audio`, `--mark-stereo-bgm <aggressive|hybrid|none>`, `--bgm-secs <N>`, `--search <term>`, `--launch <exe>`.
+- CLI: `--log`, `--speed <x>`, `--mark-stereo-bgm <aggressive|hybrid|none>`, `--bgm-secs <N>`, `--search <term>`, `--launch <exe>` / `-l <exe>`.
+- Config `krkr_speed_config.yaml` beside the controller: `controller.minimize_to_tray_on_close`, `controller.ui_language`, `controller.last_speed` (startup speed unless `--speed` is given; saved when the speed box, a hotkey or Hook sets a new speed), `auto_hook` and `process_bgm` lists.
+- UI: Common Controls v6 and PerMonitorV2 DPI awareness come from `KrkrSpeedController.manifest`. Layout values are written for 96 DPI and pass through `scalePx`; fonts are rebuilt on `WM_DPICHANGED`.
+- The injector runs with `CREATE_NO_WINDOW`.
 
 ## 8. Injection & Shared Settings
-- Injector writes the hook DLL path into remote process via LoadLibraryW. If the remote call times out, the path buffer is not freed and the controller does not retry other paths; a per-PID mutex (`Local\KrkrSpeedHook_<pid>`) keeps any second hook copy inert.
+- Injector writes the hook DLL path into remote process via LoadLibraryW. The remote thread's exit code holds only the low 32 bits of the HMODULE on x64, so an exit code of 0 is confirmed against the target's module list before reporting failure. If the remote call times out, the path buffer is not freed and the controller does not retry other paths; a per-PID mutex (`Local\KrkrSpeedHook_<pid>`) keeps any second hook copy inert.
 - SoundTouch.dll is delay-loaded from the hook DLL's folder (`DspRuntime.cpp`); copying the hook beside the game is only a fallback.
 - Import-table hooks are installed inside DllMain; COM/DirectSound bootstrap runs on the init thread.
-- Shared settings name: `Local\KrkrSpeedSettings_<pid>`; fields include userSpeed, length gate, processAllAudio, stereoBgmMode, logging flags, skipDirectSound, safe mode.
+- Shared settings name: `Local\KrkrSpeedSettings_<pid>`; fields (`SharedSettings.h`): userSpeed, lengthGateSeconds, lengthGateEnabled, enableLog, disableBgm, processAllAudio, bgmSecondsGate, stereoBgmMode, layoutSize, controllerVersion. New fields are appended only.
+- Logging: lines are buffered and flushed on warnings/errors, or when at least 1 s has passed since the last flush.
 - Hook reads settings at attach; DS/WASAPI polls periodically for updates.
 
 ## 9. Stability Practices
 - Never block audio threads; fail soft: on exceptions, disable processing for that path.
-- Validate pointers, buffer sizes; guard SetFrequency/Submit failures with logs.
+- Validate buffer sizes and formats; guard SetFrequency/Submit failures with logs.
 - Keep buffers alive until engine callbacks signal completion (Unlock path in DS; render client lifetimes in WASAPI).
 
 ## 10. Known Gaps / To‑Do
 - More coverage on Unity titles that rely on WASAPI timing quirks.
 - Further tuning of SoundTouch params for very short slices (<60 ms).
+- Open ideas and known issues with their trade-offs are tracked in `FOLLOW_UP.md`.
 
 Use this guide to reimplement or extend the controller: follow the DS hook and AudioStreamProcessor behaviors as the canonical reference. 
