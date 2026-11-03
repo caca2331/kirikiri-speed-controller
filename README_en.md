@@ -50,8 +50,8 @@ GitHub Actions builds x86/x64 and runs the tests on every push (`.github/workflo
 - Can be used together with Cheat Engine speed hacks.
 
 ### Controller CLI options
-- `--log` : enable logging for controller + hook. Logs are written beside the controller: `krkr_controller.log`, plus one `krkr_hook_<PID>.log` per hooked game. Regular lines are buffered and written in batches (at most one write per second); warnings, errors and a normal exit write at once.
-- `--speed <value>` : set the initial speed on startup; takes precedence over the saved speed (without it, the last speed is used; 1.5 on first start).
+- `--log` : enable logging for controller + hook. Logs are written beside the controller: `krkr_controller.log`, plus one `krkr_hook_<PID>.log` per hooked game. The frequent DEBUG lines are buffered and written in batches; all other lines are written at once.
+- `--speed <value>` : set the initial speed on startup; takes precedence over the saved speed (without it, the last speed is used; 1.5 on first start). A speed given this way is not saved unless you change the speed in the controller afterwards.
 - `--mark-stereo-bgm <aggressive|hybrid|none>` : DirectSound only. Stereo→BGM heuristic (default `hybrid`). In many games voices are mono and BGMs are stereo. `aggressive`: always mark stereo as BGM. `none`: never treat stereo as a BGM signal. Primary BGM labeling method.
 - `--bgm-secs <seconds>` : BGM length gate (default 60s); longer buffers treated as BGM. Secondary way to label bgm.
 - `--launch <path>` / `-l <path>` : start a game suspended, inject automatically, then resume.

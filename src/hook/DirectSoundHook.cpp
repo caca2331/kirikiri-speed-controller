@@ -162,7 +162,7 @@ void DirectSoundHook::bootstrapVtable() {
 }
 
 DirectSoundHook::BufferPtr DirectSoundHook::makeBufferInfo(const WAVEFORMATEX &fmt, DWORD bufferBytes,
-                                                           float bgmGateSeconds) {
+                                                           float bgmGateSeconds, bool allowDsp) {
     auto info = std::make_shared<BufferInfo>();
     info->sampleRate = fmt.nSamplesPerSec;
     info->channels = fmt.nChannels;
@@ -176,7 +176,7 @@ DirectSoundHook::BufferPtr DirectSoundHook::makeBufferInfo(const WAVEFORMATEX &f
                               static_cast<float>(info->blockAlign * fmt.nSamplesPerSec);
     }
     info->isLikelyBgm.store(info->approxSeconds >= bgmGateSeconds);
-    info->isPcm16 = (fmt.wFormatTag == WAVE_FORMAT_PCM && fmt.wBitsPerSample == 16);
+    info->isPcm16 = allowDsp && (fmt.wFormatTag == WAVE_FORMAT_PCM && fmt.wBitsPerSample == 16);
     if (info->isPcm16 && EnsureDspRuntime()) {
         info->stream = std::make_unique<AudioStreamProcessor>(info->sampleRate, info->channels, info->blockAlign,
                                                               DspConfig{});
@@ -305,11 +305,29 @@ ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
 
 DirectSoundHook::BufferPtr DirectSoundHook::findOrTrackBuffer(IDirectSoundBuffer *self) {
     const auto key = reinterpret_cast<std::uintptr_t>(self);
+    BufferPtr primaryEntry;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_buffers.find(key);
         if (it != m_buffers.end()) {
-            return it->second;
+            if (!it->second->isPrimary) {
+                return it->second;
+            }
+            primaryEntry = it->second;
+        }
+    }
+    if (primaryEntry) {
+        // The primary buffer's vtable is left alone, so its Release is not seen; a buffer created later at the
+        // same address must not inherit the passthrough entry.
+        DSBCAPS current{};
+        current.dwSize = sizeof(current);
+        if (SUCCEEDED(self->GetCaps(&current)) && (current.dwFlags & DSBCAPS_PRIMARYBUFFER) != 0) {
+            return primaryEntry;
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_buffers.find(key);
+        if (it != m_buffers.end() && it->second == primaryEntry) {
+            m_buffers.erase(it);
         }
     }
 
@@ -334,13 +352,11 @@ DirectSoundHook::BufferPtr DirectSoundHook::findOrTrackBuffer(IDirectSoundBuffer
         bytes = caps.dwBufferBytes;
         isPrimary = (caps.dwFlags & DSBCAPS_PRIMARYBUFFER) != 0;
     }
-    BufferPtr info = makeBufferInfo(*fx, bytes, SharedSettingsManager::instance().snapshot().bgmSecondsGate);
-    if (isPrimary) {
-        // Only the x86 global Unlock detour sees the primary buffer (WRITEPRIMARY games). It holds the final
-        // mix, so it is tracked as passthrough, like CreateSoundBufferHook skips it.
-        info->isPcm16 = false;
-        info->stream.reset();
-    }
+    // Only the x86 global Unlock detour sees the primary buffer (WRITEPRIMARY games). It holds the final mix,
+    // so it is tracked as passthrough, like CreateSoundBufferHook skips it.
+    BufferPtr info = makeBufferInfo(*fx, bytes, SharedSettingsManager::instance().snapshot().bgmSecondsGate,
+                                    !isPrimary);
+    info->isPrimary = isPrimary;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto inserted = m_buffers.emplace(key, info);

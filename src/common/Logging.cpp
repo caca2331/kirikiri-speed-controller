@@ -206,11 +206,11 @@ void writeLine(LoggerState &stateRef, LogLevel level, const std::string &line) {
         return;
     }
     stateRef.stream << "[" << currentTimestamp() << "] [" << levelToString(level) << "] " << line << '\n';
-    // Flushing every line is the expensive part of logging. Warnings and errors (including the hook's crash
-    // breadcrumbs) flush at once and carry the buffered lines before them; otherwise flush at most once per
-    // interval, so a hard kill loses at most that much and the file still updates while a game runs.
+    // Flushing every line is the expensive part of logging, and the frequent lines are the per-buffer Debug
+    // traces from audio threads. Those are batched (flushed at most once per interval, or by the next Info or
+    // higher line, FlushLog, or a normal exit); Info and above reach the file at once.
     const auto now = std::chrono::steady_clock::now();
-    if (level == LogLevel::Warn || level == LogLevel::Error || now - stateRef.lastFlush >= kFlushInterval) {
+    if (level != LogLevel::Debug || now - stateRef.lastFlush >= kFlushInterval) {
         stateRef.stream.flush();
         stateRef.lastFlush = now;
     }
@@ -243,6 +243,19 @@ void logMessage(LogLevel level, const std::string &message) {
     const std::string dbg = "[krkr] " + message + "\n";
     OutputDebugStringA(dbg.c_str());
 #endif
+}
+
+void FlushLog() {
+    auto &s = state();
+    if (t_inLogger) {
+        return; // this thread is inside logMessage (and may hold the mutex)
+    }
+    // try_lock: called from crash handlers and DLL detach, where the owner of the mutex may be gone.
+    std::unique_lock<std::mutex> lock(s.mutex, std::try_to_lock);
+    if (lock.owns_lock() && s.stream.is_open()) {
+        s.stream.flush();
+        s.lastFlush = std::chrono::steady_clock::now();
+    }
 }
 
 void logMessage(LogLevel level, const std::wstring &message) {

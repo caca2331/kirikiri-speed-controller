@@ -219,6 +219,15 @@ float readSpeedFromEdit(HWND edit) {
 }
 
 void rememberSpeed() {
+    // A one-off --speed (e.g. in a shortcut with --search) must not replace the remembered speed; it is saved
+    // only once the user has changed the speed in the controller.
+    static bool changedFromCli = false;
+    if (g_initialOptions.speedFromCli && !changedFromCli) {
+        if (std::fabs(g_state.speed.currentSpeed - controller::clampSpeed(g_initialOptions.speed)) < 0.001f) {
+            return;
+        }
+        changedFromCli = true;
+    }
     std::wstring error;
     if (!controller::setLastSpeed(g_state.speed.currentSpeed, error)) {
         KRKR_LOG_WARN(L"Failed to save last speed: " + error);

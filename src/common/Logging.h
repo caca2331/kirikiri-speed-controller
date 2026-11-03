@@ -18,12 +18,15 @@ bool IsLoggingOn();
 void SetLogDirectory(const std::wstring &path);
 void logMessage(LogLevel level, const std::string &message);
 void logMessage(LogLevel level, const std::wstring &message);
+// Writes batched Debug lines to disk. Never blocks: skipped if the logger is busy.
+void FlushLog();
 #else
 inline void SetLoggingEnabled(bool) {}
 inline bool IsLoggingOn() { return false; }
 inline void SetLogDirectory(const std::wstring &) {}
 inline void logMessage(LogLevel, const std::string &) {}
 inline void logMessage(LogLevel, const std::wstring &) {}
+inline void FlushLog() {}
 #endif
 
 inline std::string formatHex(std::uint64_t value) {

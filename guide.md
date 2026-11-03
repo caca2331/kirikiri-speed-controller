@@ -65,14 +65,14 @@ fallback for untracked audio APIs (currently anything not routed through DirectS
   - Always `GetFrequency` and `SetFrequency` if mismatch (overrides games that keep resetting frequency).
   - AppliedSpeed = DesiredFreq / baseFreq; feed this to SoundTouch (pitch mode) in AudioStreamProcessor.
 - DSP result is written back to the locked regions; tail is kept in Cbuffer (not re‑DSPed).
-- Interception: each device/buffer created through the hooked `DirectSoundCreate*` gets a shadow vtable (shared per original vtable). On x86 an inline detour on dsound's Unlock also catches buffers created before injection; those are tracked lazily, and the primary buffer is passed through. x64 has no such detour, so devices created before injection are not hooked (see FOLLOW_UP.md).
+- Interception: each device/buffer created through the hooked `DirectSoundCreate*` gets a shadow vtable (shared per original vtable). On x86 an inline detour on dsound's Unlock also catches buffers created before injection; those are tracked lazily, and the primary buffer is passed through (its entry is re-validated with `GetCaps`, since its vtable is not patched). x64 has no such detour, so devices created before injection are not hooked (see FOLLOW_UP.md).
 - The locked regions are trusted as returned by Lock (no `IsBadReadPtr`/`IsBadWritePtr` probing).
 - Logs: `--log` enables; the controller writes `krkr_controller.log`, each hooked process `krkr_hook_<pid>.log` (directory from the `%TEMP%/krkr_log_dir.txt` hint, UTF-8).
 
 ## 7. Controller (KrkrSpeedController.exe)
 - Enumerates visible processes, writes shared settings (speed, gates, stereo‑BGM mode, process‑all) to per‑PID shared memory, launches injector, and reports status.
 - CLI: `--log`, `--speed <x>`, `--mark-stereo-bgm <aggressive|hybrid|none>`, `--bgm-secs <N>`, `--search <term>`, `--launch <exe>` / `-l <exe>`.
-- Config `krkr_speed_config.yaml` beside the controller: `controller.minimize_to_tray_on_close`, `controller.ui_language`, `controller.last_speed` (startup speed unless `--speed` is given; saved when the speed box, a hotkey or Hook sets a new speed), `auto_hook` and `process_bgm` lists.
+- Config `krkr_speed_config.yaml` beside the controller: `controller.minimize_to_tray_on_close`, `controller.ui_language`, `controller.last_speed` (startup speed unless `--speed` is given; saved when the speed box, a hotkey or Hook sets a new speed, but a `--speed` value only once the user has changed the speed), `auto_hook` and `process_bgm` lists.
 - UI: Common Controls v6 and PerMonitorV2 DPI awareness come from `KrkrSpeedController.manifest`. Layout values are written for 96 DPI and pass through `scalePx`; fonts are rebuilt on `WM_DPICHANGED`.
 - The injector runs with `CREATE_NO_WINDOW`.
 
@@ -81,7 +81,7 @@ fallback for untracked audio APIs (currently anything not routed through DirectS
 - SoundTouch.dll is delay-loaded from the hook DLL's folder (`DspRuntime.cpp`); copying the hook beside the game is only a fallback.
 - Import-table hooks are installed inside DllMain; COM/DirectSound bootstrap runs on the init thread.
 - Shared settings name: `Local\KrkrSpeedSettings_<pid>`; fields (`SharedSettings.h`): userSpeed, lengthGateSeconds, lengthGateEnabled, enableLog, disableBgm, processAllAudio, bgmSecondsGate, stereoBgmMode, layoutSize, controllerVersion. New fields are appended only.
-- Logging: lines are buffered and flushed on warnings/errors, or when at least 1 s has passed since the last flush.
+- Logging: DEBUG lines are buffered and flushed when 1 s has passed since the last flush (or by the next INFO+ line); INFO and above flush at once. `FlushLog()` (try-lock, never blocks) runs from the hook's vectored handler and on `DLL_PROCESS_DETACH`.
 - Hook reads settings at attach; DS/WASAPI polls periodically for updates.
 
 ## 9. Stability Practices

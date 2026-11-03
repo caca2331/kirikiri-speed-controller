@@ -67,6 +67,7 @@ private:
         std::uint32_t channels = 0;
         std::uint16_t bitsPerSample = 16;
         bool isPcm16 = true;
+        bool isPrimary = false; // passthrough; never patched, so the entry is re-validated on lookup
         std::uint16_t formatTag = WAVE_FORMAT_PCM;
         std::uint32_t baseFrequency = 0;
         std::uint32_t bufferBytes = 0;
@@ -82,7 +83,9 @@ private:
     };
     using BufferPtr = std::shared_ptr<BufferInfo>;
 
-    static BufferPtr makeBufferInfo(const WAVEFORMATEX &fmt, DWORD bufferBytes, float bgmGateSeconds);
+    // allowDsp=false tracks the buffer as passthrough (no DSP stream is created).
+    static BufferPtr makeBufferInfo(const WAVEFORMATEX &fmt, DWORD bufferBytes, float bgmGateSeconds,
+                                    bool allowDsp = true);
     void **shadowFor(void **origVtbl, std::size_t count, std::unordered_map<void **, std::vector<void *>> &shadows);
     BufferPtr findOrTrackBuffer(IDirectSoundBuffer *self);
     void rememberBgmRelease(std::uintptr_t key, std::chrono::steady_clock::time_point now);

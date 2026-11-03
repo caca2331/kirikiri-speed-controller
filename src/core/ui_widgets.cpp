@@ -357,6 +357,20 @@ UINT queryWindowDpi(HWND hwnd) {
             return dpi;
         }
     }
+    // Windows 8.1 / 10 before 1607: per-monitor DPI through shcore (MDT_EFFECTIVE_DPI = 0).
+    using GetDpiForMonitorFn = HRESULT(WINAPI *)(HMONITOR, int, UINT *, UINT *);
+    static const auto getDpiForMonitor = [] {
+        HMODULE shcore = LoadLibraryExW(L"shcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        return shcore ? reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(shcore, "GetDpiForMonitor")) : nullptr;
+    }();
+    if (getDpiForMonitor && hwnd) {
+        UINT dpiX = 0;
+        UINT dpiY = 0;
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (monitor && SUCCEEDED(getDpiForMonitor(monitor, 0, &dpiX, &dpiY)) && dpiY != 0) {
+            return dpiY;
+        }
+    }
     return screenDpi();
 }
 

@@ -14,7 +14,9 @@ function Get-Dependencies([string]$path) {
     $section = ''
     $normal = @()
     $delay = @()
-    foreach ($line in (& $dumpbin /nologo /dependents $path)) {
+    $output = & $dumpbin /nologo /dependents $path
+    if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $path (exit $LASTEXITCODE)" }
+    foreach ($line in $output) {
         if ($line -match 'following delay load dependencies') { $section = 'delay'; continue }
         if ($line -match 'following dependencies') { $section = 'normal'; continue }
         if ($line -match '^\s*Summary') { $section = ''; continue }
@@ -23,6 +25,8 @@ function Get-Dependencies([string]$path) {
             if ($section -eq 'delay') { $delay += $name } elseif ($section -eq 'normal') { $normal += $name }
         }
     }
+    # Every Windows image imports KERNEL32; an empty list means the output was not parsed.
+    if ($normal.Count -eq 0) { throw "No imports parsed for $path; dumpbin output format changed?" }
     return @{ Normal = $normal; Delay = $delay }
 }
 

@@ -100,6 +100,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     krkrspeed::ui::ControllerOptions controllerOpts{};
     controllerOpts.enableLog = opts.enableLog;
     controllerOpts.speed = opts.speed;
+    controllerOpts.speedFromCli = opts.speedFromCli;
     controllerOpts.bgmSeconds = opts.bgmSeconds;
     controllerOpts.launchPath = opts.launchPath.wstring();
     controllerOpts.stereoBgmMode = opts.stereoBgmMode;

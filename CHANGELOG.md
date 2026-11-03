@@ -26,7 +26,7 @@
 - The version is defined once in `CMakeLists.txt` (`project(VERSION)`) and generated into `KrkrVersion.h`
 - Controller UI uses Common Controls v6 (themed controls; the GitHub link is a real clickable link) and the system message font
 - The controller is per-monitor DPI aware (PerMonitorV2): window size, layout and fonts scale with the monitor and follow moves between monitors
-- Log lines end with `'\n'`; the file is flushed on warnings/errors and otherwise at most once per second (was: after every line)
+- Log lines end with `'\n'`; only DEBUG lines (the per-buffer audio traces) are batched and flushed at most once per second, everything else is flushed at once; the hook also flushes from its crash handler and on unload (was: flush after every line)
 - DirectSound Unlock no longer probes the locked regions with `IsBadReadPtr`/`IsBadWritePtr`
 - `dist` no longer contains SoundTouch.dll beside the controller (only in `x86/` and `x64/`); staging removes a stale copy
 ### Added
@@ -35,7 +35,7 @@
 - GitHub Actions workflow: x86/x64 build + tests on every push, staged `dist` folder uploaded as an artifact
 - The selected UI language is remembered in `krkr_speed_config.yaml` (`ui_language`)
 - Shared settings carry the controller version; the hook log warns when controller and hook versions differ
-- The last speed set in the controller is remembered in `krkr_speed_config.yaml` (`last_speed`); `--speed` takes precedence
+- The last speed set in the controller is remembered in `krkr_speed_config.yaml` (`last_speed`); `--speed` takes precedence and is not saved unless the speed is changed in the controller
 - CI checks the built binaries (controller does not import SoundTouch.dll, the hook delay-loads it, the controller manifest is embedded) and the staged `dist` layout
 
 ## [1.2.1] - 2026-01-12

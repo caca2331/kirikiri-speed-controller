@@ -91,6 +91,8 @@ namespace {
                            " addr=" + krkrspeed::formatHex(reinterpret_cast<std::uintptr_t>(addr)) +
                            " mod=" + modName);
         }
+        // Past the breadcrumb cap (or when the Error line was dropped), still get batched lines to disk.
+        krkrspeed::FlushLog();
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -384,6 +386,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
             KRKR_LOG_ERROR("Import hook installation threw an exception");
         }
         std::thread(runDeferredInitialization).detach();
+    } else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+        // On process exit other threads are already gone; FlushLog only try-locks, so it cannot deadlock.
+        krkrspeed::FlushLog();
     }
     return TRUE;
 }

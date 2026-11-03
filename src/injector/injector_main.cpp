@@ -124,8 +124,9 @@ int wmain_impl(int argc, wchar_t **argv) {
     if (waitResult == WAIT_OBJECT_0) {
         VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
     }
-    // Otherwise LoadLibraryW may still be reading the path (e.g. blocked on the loader lock);
-    // freeing it now would make the target read freed memory, so the few bytes are leaked instead.
+    // Not freed otherwise: LoadLibraryW may still be reading the path (e.g. blocked on the loader lock),
+    // and freeing it now would make the target read freed memory, so the few bytes are leaked instead.
+
     const bool loaded = (waitResult == WAIT_OBJECT_0) && (exitCode != 0 || isModuleLoaded(process, dllPath));
     CloseHandle(process);
 

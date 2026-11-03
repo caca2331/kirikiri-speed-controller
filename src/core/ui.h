@@ -14,6 +14,7 @@ struct ControllerOptions {
     bool enableLog = false;
     bool processAllAudio = false;
     float speed = 1.5f;
+    bool speedFromCli = false; // speed came from --speed: not remembered until the user changes it
     float bgmSeconds = 60.0f;
     std::wstring launchPath;
     std::uint32_t stereoBgmMode = 1;
